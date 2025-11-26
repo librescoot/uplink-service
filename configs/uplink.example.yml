@@ -1,0 +1,21 @@
+uplink:
+  server_url: "ws://10.7.0.2:8080/ws"
+  keepalive_interval: "5m"
+  reconnect_max_delay: "5m"
+
+scooter:
+  identifier: "mdb-12345678"
+  token: "secret-token-1"
+
+telemetry:
+  intervals:
+    driving: "10s"
+    standby: "1m"
+    standby_no_battery: "5m"
+    hibernate: "30m"
+  buffer:
+    enabled: true
+    max_size: 1000
+    persist_path: "/data/uplink-buffer.json"
+
+redis_url: "unix:///var/run/redis/redis.sock"

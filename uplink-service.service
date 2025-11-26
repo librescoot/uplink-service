@@ -1,0 +1,15 @@
+[Unit]
+Description=LibreScoot Uplink Service
+After=network-online.target librescoot-onboot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/data/uplink-service -config /data/uplink.yml
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
