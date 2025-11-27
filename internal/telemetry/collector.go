@@ -3,7 +3,6 @@ package telemetry
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -60,7 +59,7 @@ func (c *Collector) CollectKeyState(ctx context.Context, keyName string) (map[st
 	return state, nil
 }
 
-// collectKey reads and parses a single Redis key
+// collectKey reads a single Redis key, passing through all fields
 func (c *Collector) collectKey(ctx context.Context, keyName string) (map[string]interface{}, error) {
 	data, err := c.redisClient.HGetAll(ctx, keyName).Result()
 	if err != nil {
@@ -68,98 +67,9 @@ func (c *Collector) collectKey(ctx context.Context, keyName string) (map[string]
 	}
 
 	result := make(map[string]interface{})
-
-	// Parse based on key type
-	switch keyName {
-	case "gps":
-		result["latitude"] = parseFloat(data["latitude"])
-		result["longitude"] = parseFloat(data["longitude"])
-		result["altitude"] = parseFloat(data["altitude"])
-		result["state"] = data["state"]
-		result["timestamp"] = data["timestamp"]
-
-	case "vehicle":
-		result["state"] = data["state"]
-		result["handlebar_lock"] = data["handlebar:lock-sensor"]
-		result["seatbox_lock"] = data["seatbox:lock"]
-		result["kickstand"] = data["kickstand"]
-
-	case "battery:0", "battery:1":
-		result["present"] = data["present"] == "true"
-		result["charge"] = parseInt(data["charge"])
-		result["state"] = data["state"]
-		result["voltage"] = parseInt(data["voltage"])
-		result["soh"] = parseInt(data["state-of-health"])
-		result["cycle_count"] = parseInt(data["cycle-count"])
-		result["temp0"] = parseInt(data["temperature:0"])
-		result["temp1"] = parseInt(data["temperature:1"])
-		result["temp2"] = parseInt(data["temperature:2"])
-		result["temp3"] = parseInt(data["temperature:3"])
-		result["fw_version"] = data["fw-version"]
-		result["serial"] = data["serial-number"]
-
-	case "aux-battery":
-		result["charge"] = parseInt(data["charge"])
-		result["voltage"] = parseInt(data["voltage"])
-		result["status"] = data["charge-status"]
-
-	case "cb-battery":
-		result["present"] = data["present"] == "true"
-		result["charge"] = parseInt(data["charge"])
-		result["status"] = data["charge-status"]
-
-	case "engine-ecu":
-		result["speed"] = parseInt(data["speed"])
-		result["odometer"] = parseInt(data["odometer"])
-		result["temperature"] = parseInt(data["temperature"])
-		result["state"] = data["state"]
-		result["fw_version"] = data["fw-version"]
-
-	case "power-manager":
-		result["state"] = data["state"]
-		result["wakeup_source"] = data["wakeup-source"]
-		result["nrf_reset_count"] = parseInt(data["nrf-reset-count"])
-
-	case "internet":
-		result["status"] = data["status"]
-		result["signal_quality"] = parseInt(data["signal-quality"])
-		result["ip_address"] = data["ip-address"]
-
-	case "modem":
-		result["operator"] = data["operator-name"]
-		result["roaming"] = data["is-roaming"] == "true"
-		result["sim_imei"] = data["sim-imei"]
-		result["sim_imsi"] = data["sim-imsi"]
-		result["sim_iccid"] = data["sim-iccid"]
-
-	case "system":
-		result["mdb_version"] = data["mdb-version"]
-		result["dbc_version"] = data["dbc-version"]
-		result["nrf_version"] = data["nrf-fw-version"]
-
-	case "dashboard":
-		result["serial"] = data["serial-number"]
-		result["mode"] = data["mode"]
-
-	case "keycard":
-		result["authentication"] = data["authentication"]
-		result["uid"] = data["uid"]
-
-	case "ble":
-		result["mac_address"] = data["mac-address"]
-		result["status"] = data["status"]
+	for field, value := range data {
+		result[field] = value
 	}
-
 	return result, nil
 }
 
-// Helper functions
-func parseInt(s string) int {
-	val, _ := strconv.Atoi(s)
-	return val
-}
-
-func parseFloat(s string) float64 {
-	val, _ := strconv.ParseFloat(s, 64)
-	return val
-}

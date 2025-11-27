@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -327,4 +328,9 @@ func splitLines(s string) []string {
 		lines = append(lines, s[start:])
 	}
 	return lines
+}
+
+func parseInt(s string) int {
+	val, _ := strconv.Atoi(s)
+	return val
 }
