@@ -128,20 +128,20 @@ func statsLogger(ctx context.Context, connMgr *connection.Manager) {
 			return
 		case <-ticker.C:
 			stats := connMgr.GetStats()
-			log.Printf("\n=== CLIENT STATS ===\n"+
-				"Connected: %v, Auth: %v\n"+
-				"Uptime: %s, Idle: %s\n"+
-				"Bytes: sent=%d (%.2f KB), recv=%d (%.2f KB)\n"+
-				"Messages: sent=%d, recv=%d\n"+
-				"Telemetry sent: %d, Commands recv: %d\n"+
-				"Disconnects: %d\n"+
-				"====================",
-				stats["connected"], stats["authenticated"],
-				stats["uptime"], stats["idle"],
-				stats["bytes_sent"], float64(stats["bytes_sent"].(int64))/1024,
-				stats["bytes_received"], float64(stats["bytes_received"].(int64))/1024,
-				stats["messages_sent"], stats["messages_recv"],
+			connStatus := "disconnected"
+			if stats["connected"].(bool) {
+				if stats["authenticated"].(bool) {
+					connStatus = "auth"
+				} else {
+					connStatus = "conn"
+				}
+			}
+			log.Printf("[Stats] %s | ↑%.1fKB ↓%.1fKB | tel:%d cmd:%d | up:%s idle:%s disc:%d",
+				connStatus,
+				float64(stats["bytes_sent"].(int64))/1024,
+				float64(stats["bytes_received"].(int64))/1024,
 				stats["telemetry_sent"], stats["commands_recv"],
+				stats["uptime"], stats["idle"],
 				stats["disconnects"])
 		}
 	}
