@@ -113,19 +113,19 @@ func (m *Monitor) handleChannelNotification(ctx context.Context, channel string)
 // shouldNotifyKey returns whether we should send change notifications for this key
 func (m *Monitor) shouldNotifyKey(fullKey string) bool {
 	// Filter out noisy/transient fields
-	if fullKey == "gps.timestamp" {
+	if fullKey == "gps[timestamp]" {
 		return false
 	}
 
 	// For batteries, only notify on charge/state/present
-	if len(fullKey) >= 10 && (fullKey[:10] == "battery:0." || fullKey[:10] == "battery:1.") {
-		field := fullKey[10:]
+	if len(fullKey) >= 11 && (fullKey[:11] == "battery:0[" || fullKey[:11] == "battery:1[") {
+		field := fullKey[11 : len(fullKey)-1] // extract field from battery:0[field]
 		return field == "charge" || field == "state" || field == "present"
 	}
 
 	// For engine-ecu, only notify on speed/state
-	if len(fullKey) >= 11 && fullKey[:11] == "engine-ecu." {
-		field := fullKey[11:]
+	if len(fullKey) >= 12 && fullKey[:11] == "engine-ecu[" {
+		field := fullKey[11 : len(fullKey)-1]
 		return field == "speed" || field == "state"
 	}
 

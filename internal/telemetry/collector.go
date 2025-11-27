@@ -36,7 +36,7 @@ func (c *Collector) CollectState(ctx context.Context) (map[string]interface{}, e
 	for _, key := range keys {
 		keyState, _ := c.collectKey(ctx, key)
 		for field, value := range keyState {
-			state[fmt.Sprintf("%s.%s", key, field)] = value
+			state[fmt.Sprintf("%s[%s]", key, field)] = value
 		}
 	}
 
@@ -50,10 +50,9 @@ func (c *Collector) CollectKeyState(ctx context.Context, keyName string) (map[st
 		return nil, err
 	}
 
-	// Convert to dot-notation keys
 	state := make(map[string]interface{})
 	for field, value := range keyData {
-		state[fmt.Sprintf("%s.%s", keyName, field)] = value
+		state[fmt.Sprintf("%s[%s]", keyName, field)] = value
 	}
 
 	return state, nil
