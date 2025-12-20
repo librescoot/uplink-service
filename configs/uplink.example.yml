@@ -1,21 +1,15 @@
 uplink:
-  server_url: "ws://10.7.0.2:8080/ws"
+  server_url: "ws://your-server:8080/ws"
   keepalive_interval: "5m"
   reconnect_max_delay: "5m"
 
 scooter:
-  identifier: "mdb-12345678"
-  token: "secret-token-1"
+  identifier: "YOUR_SCOOTER_VIN_HERE"
+  token: "YOUR_AUTH_TOKEN_HERE"
 
 telemetry:
-  intervals:
-    driving: "10s"
-    standby: "1m"
-    standby_no_battery: "5m"
-    hibernate: "30m"
-  buffer:
-    enabled: true
-    max_size: 1000
-    persist_path: "/data/uplink-buffer.json"
+  debounce_duration: "1s"
+  event_buffer_path: "/data/uplink-events.queue"
+  event_max_retries: 10
 
-redis_url: "unix:///var/run/redis/redis.sock"
+redis_url: "localhost:6379"
