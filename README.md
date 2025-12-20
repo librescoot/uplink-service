@@ -6,11 +6,12 @@ Scooter-side client for librescoot uplink system. Maintains persistent connectio
 
 - WebSocket connection with automatic reconnection
 - Exponential backoff (1s → 2s → 4s → ... → 5min max)
-- Token-based authentication
-- Telemetry sending (currently dummy data, Redis integration TODO)
+- Token-based authentication (VIN + token)
+- Real-time telemetry from Redis via redis-ipc library
+- Event detection with persistent buffering (battery critical, power state changes, GPS, etc.)
 - Command reception and execution
 - Connection statistics tracking
-- Configurable keepalive intervals
+- Configurable keepalive and debounce intervals
 
 ## Building
 
@@ -28,7 +29,7 @@ make client-linux-arm
 
 ## Configuration
 
-Create `/etc/librescoot/uplink.yml` (see `configs/uplink.example.yml`):
+Create `/data/uplink.yml` (see `configs/uplink.example.yml`):
 
 ```yaml
 uplink:
@@ -37,21 +38,15 @@ uplink:
   reconnect_max_delay: "5m"
 
 scooter:
-  identifier: "mdb-12345678"
-  token: "secret-token-here"
+  identifier: "WUNU2S3B7MZ000147"  # Vehicle VIN
+  token: "your-auth-token-here"
 
 telemetry:
-  intervals:
-    driving: "10s"
-    standby: "1m"
-    standby_no_battery: "5m"
-    hibernate: "30m"
-  buffer:
-    enabled: true
-    max_size: 1000
-    persist_path: "/data/uplink-buffer.json"
+  debounce_duration: "1s"          # Debounce interval for telemetry updates
+  event_buffer_path: "/data/uplink-events.queue"
+  event_max_retries: 10
 
-redis_url: "unix:///var/run/redis/redis.sock"
+redis_url: "localhost:6379"
 ```
 
 ## Running
@@ -78,18 +73,38 @@ redis_url: "unix:///var/run/redis/redis.sock"
 ## Architecture
 
 ```
-┌───────────────┐
-│  Connection   │
-│   Manager     │
-└───────┬───────┘
-        │
-   ┌────┴────┐
-   │         │
-┌──▼──┐  ┌──▼────┐
-│ Tel │  │ Cmd   │
-│Send │  │Handle │
-└─────┘  └───────┘
+┌─────────────────────────────────────────┐
+│           Connection Manager            │
+│  (WebSocket, Auth, Reconnection Logic)  │
+└────────┬────────────────────────┬────────┘
+         │                        │
+    ┌────▼────────┐         ┌─────▼────────┐
+    │  Telemetry  │         │   Command    │
+    │   Monitor   │         │   Handler    │
+    │             │         │              │
+    │ 12 Hash     │         └──────────────┘
+    │ Watchers    │
+    └─────┬───────┘
+          │
+    ┌─────▼────────┐
+    │    Event     │
+    │  Detector    │
+    │              │
+    │  7 Hash      │
+    │  Watchers    │
+    └──────────────┘
+          │
+    ┌─────▼────────┐
+    │ Redis (IPC)  │
+    │ vehicle, gps │
+    │ battery, etc │
+    └──────────────┘
 ```
+
+**Components:**
+- **Monitor**: Watches 12 Redis hashes, debounces changes, sends telemetry updates
+- **EventDetector**: Watches for critical events (battery low, power state changes, GPS fix, etc.)
+- **HashWatcher**: redis-ipc abstraction for PUBSUB + HGET with automatic debouncing
 
 ## Development
 
@@ -97,26 +112,24 @@ redis_url: "unix:///var/run/redis/redis.sock"
 
 ```
 uplink-service/
-├── cmd/uplink-service/  # Main application
+├── cmd/uplink-service/     # Main application
 ├── internal/
-│   ├── config/          # Configuration
-│   ├── connection/      # Connection manager
-│   ├── telemetry/       # Telemetry sender
-│   ├── commands/        # Command handler
-│   ├── buffer/          # Telemetry buffer (TODO)
-│   └── protocol/        # Message protocol
-├── configs/             # Example configurations
-└── bin/                 # Built binaries
+│   ├── config/             # Configuration
+│   ├── connection/         # Connection manager
+│   ├── telemetry/          # Monitor, EventDetector, Collector
+│   ├── commands/           # Command handler
+│   └── protocol/           # Message protocol
+├── configs/                # Example configurations
+├── librescoot-uplink.service  # Systemd service file
+└── bin/                    # Built binaries (not in git)
 ```
 
 ## TODO
 
-- [ ] Integrate with Redis for real telemetry (like radio-gaga)
-- [ ] Implement persistent telemetry buffering
 - [ ] Add command response sending
 - [ ] Implement actual command execution (unlock/lock/reboot)
-- [ ] Add systemd service file
 - [ ] Add Yocto recipe
+- [ ] Add integration tests
 
 ## License
 
