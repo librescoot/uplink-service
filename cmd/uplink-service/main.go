@@ -6,10 +6,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	ipc "github.com/librescoot/redis-ipc"
 
 	"github.com/librescoot/uplink-service/internal/commands"
 	"github.com/librescoot/uplink-service/internal/config"
@@ -40,37 +42,40 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize Redis client
-	var redisOpts *redis.Options
-	if len(cfg.RedisURL) > 7 && cfg.RedisURL[:7] == "unix://" {
-		redisOpts = &redis.Options{
-			Network: "unix",
-			Addr:    cfg.RedisURL[7:],
-		}
-	} else if len(cfg.RedisURL) > 6 && cfg.RedisURL[:6] == "tcp://" {
-		redisOpts = &redis.Options{
-			Network: "tcp",
-			Addr:    cfg.RedisURL[6:],
-		}
-	} else {
-		redisOpts = &redis.Options{
-			Addr: cfg.RedisURL,
+	// Parse Redis URL
+	redisAddr := cfg.RedisURL
+	redisPort := 6379
+	if strings.Contains(redisAddr, ":") {
+		parts := strings.Split(redisAddr, ":")
+		redisAddr = parts[0]
+		if port, err := strconv.Atoi(parts[1]); err == nil {
+			redisPort = port
 		}
 	}
-	redisClient := redis.NewClient(redisOpts)
 
-	// Test Redis connection
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		log.Printf("Warning: Redis connection failed: %v (will retry)", err)
-	} else {
-		log.Println("Connected to Redis")
+	// Initialize redis-ipc client
+	client, err := ipc.New(
+		ipc.WithAddress(redisAddr),
+		ipc.WithPort(redisPort),
+		ipc.WithCodec(ipc.StringCodec{}),
+		ipc.WithOnConnect(func() {
+			log.Println("Connected to Redis")
+		}),
+		ipc.WithOnDisconnect(func(err error) {
+			if err != nil {
+				log.Printf("Redis disconnected: %v", err)
+			}
+		}),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create Redis client: %v", err)
 	}
 
 	// Initialize components
 	connMgr := connection.NewManager(cfg)
-	collector := telemetry.NewCollector(redisClient)
-	monitor := telemetry.NewMonitor(redisClient, collector, connMgr, cfg.Telemetry.GetDebounceDuration())
-	eventDetector := telemetry.NewEventDetector(redisClient, connMgr, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
+	collector := telemetry.NewCollector(client)
+	monitor := telemetry.NewMonitor(client, collector, connMgr, cfg.Telemetry.GetDebounceDuration())
+	eventDetector := telemetry.NewEventDetector(client, connMgr, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
 	cmdHandler := commands.NewHandler(connMgr)
 
 	// Start connection manager

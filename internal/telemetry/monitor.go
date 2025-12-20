@@ -5,109 +5,89 @@ import (
 	"log"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	ipc "github.com/librescoot/redis-ipc"
 
 	"github.com/librescoot/uplink-service/internal/connection"
 )
 
 // Monitor watches Redis keys for changes and sends deltas
 type Monitor struct {
-	redisClient *redis.Client
-	collector   *Collector
-	connMgr     *connection.Manager
-	debounce    time.Duration
+	client    *ipc.Client
+	collector *Collector
+	connMgr   *connection.Manager
+	debounce  time.Duration
 
-	lastState   map[string]interface{}
+	watchers       []*ipc.HashWatcher
 	pendingChanges map[string]interface{}
-	debounceTimer *time.Timer
+	debounceTimer  *time.Timer
 }
 
 // NewMonitor creates a new state monitor
-func NewMonitor(redisClient *redis.Client, collector *Collector, connMgr *connection.Manager, debounce time.Duration) *Monitor {
+func NewMonitor(client *ipc.Client, collector *Collector, connMgr *connection.Manager, debounce time.Duration) *Monitor {
 	return &Monitor{
-		redisClient: redisClient,
-		collector:   collector,
-		connMgr:     connMgr,
-		debounce:    debounce,
+		client:         client,
+		collector:      collector,
+		connMgr:        connMgr,
+		debounce:       debounce,
 		pendingChanges: make(map[string]interface{}),
 	}
 }
 
 // Start begins monitoring Redis for changes
 func (m *Monitor) Start(ctx context.Context) {
-	log.Println("[Monitor] Starting Redis PUBSUB monitoring...")
+	log.Println("[Monitor] Starting Redis PUBSUB monitoring with HashWatchers...")
 
-	// Subscribe to notification channels for all monitored keys
+	// Create HashWatcher for each monitored key
 	channels := []string{
 		"vehicle", "battery:0", "battery:1", "aux-battery", "cb-battery",
 		"engine-ecu", "gps", "internet", "modem", "power-manager",
 		"keycard", "ble",
 	}
 
-	pubsub := m.redisClient.Subscribe(ctx, channels...)
-	defer pubsub.Close()
+	for _, channel := range channels {
+		watcher := m.client.NewHashWatcher(channel)
+		watcher.SetDebounce(m.debounce)
+		watcher.OnAny(func(field, value string) error {
+			return m.handleFieldChange(channel, field, value)
+		})
+		watcher.StartWithSync(ctx)
+		m.watchers = append(m.watchers, watcher)
+	}
 
-	ch := pubsub.Channel()
+	log.Printf("[Monitor] Started %d HashWatchers", len(m.watchers))
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg := <-ch:
-			// Channel notification received (key was modified)
-			m.handleChannelNotification(ctx, msg.Channel)
-		}
+	// Block until context is done
+	<-ctx.Done()
+
+	// Stop all watchers
+	for _, watcher := range m.watchers {
+		watcher.Stop()
 	}
 }
 
-// handleChannelNotification processes a Redis channel notification
-func (m *Monitor) handleChannelNotification(ctx context.Context, channel string) {
-	// Channel name is the key name (e.g., "battery:0", "vehicle")
-	log.Printf("[Monitor] Received notification on key: %s", channel)
+// handleFieldChange processes a field change from HashWatcher
+func (m *Monitor) handleFieldChange(hash, field, value string) error {
+	fullKey := hash + "[" + field + "]"
 
-	// Collect only the changed key's state (optimization)
-	keyState, err := m.collector.CollectKeyState(ctx, channel)
-	if err != nil {
-		log.Printf("[Monitor] Failed to collect key state: %v", err)
-		return
+	// Filter out noisy fields
+	if !m.shouldNotifyKey(fullKey) {
+		return nil
 	}
 
-	// Initialize lastState if needed (first notification)
-	if m.lastState == nil {
-		m.lastState = make(map[string]interface{})
-	}
-
-	// Compute changes for this key only
-	changes := make(map[string]interface{})
-	for fullKey, newVal := range keyState {
-		oldVal, exists := m.lastState[fullKey]
-		if !exists || !equal(oldVal, newVal) {
-			if m.shouldNotifyKey(fullKey) {
-				changes[fullKey] = newVal
-			}
-		}
-		// Always update lastState
-		m.lastState[fullKey] = newVal
-	}
-
-	if len(changes) == 0 {
-		return
-	}
-
-	log.Printf("[Monitor] Computed %d changes", len(changes))
+	log.Printf("[Monitor] Change: %s = %s", fullKey, value)
 
 	// Add to pending changes
-	for k, v := range changes {
-		m.pendingChanges[k] = v
-	}
+	m.pendingChanges[fullKey] = value
 
 	// Reset/start debounce timer
 	if m.debounceTimer != nil {
 		m.debounceTimer.Stop()
 	}
 	m.debounceTimer = time.AfterFunc(m.debounce, func() {
-		m.flushChanges(ctx)
+		m.flushChanges()
 	})
+
+	return nil
 }
 
 // shouldNotifyKey returns whether we should send change notifications for this key
@@ -134,7 +114,7 @@ func (m *Monitor) shouldNotifyKey(fullKey string) bool {
 }
 
 // flushChanges sends pending changes and clears the buffer
-func (m *Monitor) flushChanges(ctx context.Context) {
+func (m *Monitor) flushChanges() {
 	if len(m.pendingChanges) == 0 {
 		return
 	}
@@ -146,9 +126,4 @@ func (m *Monitor) flushChanges(ctx context.Context) {
 	}
 
 	m.pendingChanges = make(map[string]interface{})
-}
-
-// equal compares two values for equality
-func equal(a, b interface{}) bool {
-	return a == b
 }

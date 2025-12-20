@@ -3,213 +3,236 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	ipc "github.com/librescoot/redis-ipc"
 
 	"github.com/librescoot/uplink-service/internal/connection"
 )
 
 // EventDetector monitors for critical conditions and sends event messages
 type EventDetector struct {
-	redisClient *redis.Client
-	connMgr     *connection.Manager
-	bufferPath  string
-	maxRetries  int
+	client     *ipc.Client
+	connMgr    *connection.Manager
+	bufferPath string
+	maxRetries int
 
+	watchers  []*ipc.HashWatcher
 	lastState map[string]string
 }
 
 // NewEventDetector creates a new event detector
-func NewEventDetector(redisClient *redis.Client, connMgr *connection.Manager, bufferPath string, maxRetries int) *EventDetector {
+func NewEventDetector(client *ipc.Client, connMgr *connection.Manager, bufferPath string, maxRetries int) *EventDetector {
 	return &EventDetector{
-		redisClient: redisClient,
-		connMgr:     connMgr,
-		bufferPath:  bufferPath,
-		maxRetries:  maxRetries,
-		lastState:   make(map[string]string),
+		client:     client,
+		connMgr:    connMgr,
+		bufferPath: bufferPath,
+		maxRetries: maxRetries,
+		lastState:  make(map[string]string),
 	}
 }
 
 // Start begins monitoring for events
 func (e *EventDetector) Start(ctx context.Context) {
-	log.Println("[EventDetector] Starting...")
+	log.Println("[EventDetector] Starting with HashWatchers...")
 
 	// First, flush any buffered events
 	go e.flushBufferedEvents(ctx)
 
-	// Subscribe to notification channels
-	channels := []string{
-		"vehicle", "battery:0", "battery:1", "power-manager",
-		"internet", "gps", "engine-ecu",
+	// Battery watchers - monitor charge and present fields
+	for _, battery := range []string{"battery:0", "battery:1"} {
+		w := e.client.NewHashWatcher(battery)
+		w.OnField("charge", e.makeBatteryChargeHandler(battery))
+		w.OnField("present", e.makeBatteryPresentHandler(battery))
+		w.OnField("temperature", e.makeTemperatureHandler(battery, "temperature"))
+		w.StartWithSync(ctx)
+		e.watchers = append(e.watchers, w)
 	}
 
-	pubsub := e.redisClient.Subscribe(ctx, channels...)
-	defer pubsub.Close()
+	// Power manager watcher
+	pmWatcher := e.client.NewHashWatcher("power-manager")
+	pmWatcher.OnField("state", e.handlePowerState)
+	pmWatcher.StartWithSync(ctx)
+	e.watchers = append(e.watchers, pmWatcher)
 
-	ch := pubsub.Channel()
+	// Internet watcher
+	internetWatcher := e.client.NewHashWatcher("internet")
+	internetWatcher.OnField("status", e.handleConnectivityStatus)
+	internetWatcher.StartWithSync(ctx)
+	e.watchers = append(e.watchers, internetWatcher)
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg := <-ch:
-			// Channel notification
-			e.checkForEvents(ctx, msg.Channel)
+	// Vehicle watcher
+	vehicleWatcher := e.client.NewHashWatcher("vehicle")
+	vehicleWatcher.OnField("handlebar:lock-sensor", e.makeHandlebarLockHandler())
+	vehicleWatcher.OnField("seatbox:lock", e.makeSeatboxLockHandler())
+	vehicleWatcher.StartWithSync(ctx)
+	e.watchers = append(e.watchers, vehicleWatcher)
+
+	// GPS watcher
+	gpsWatcher := e.client.NewHashWatcher("gps")
+	gpsWatcher.OnField("state", e.handleGPSState)
+	gpsWatcher.StartWithSync(ctx)
+	e.watchers = append(e.watchers, gpsWatcher)
+
+	// Engine ECU watcher
+	ecuWatcher := e.client.NewHashWatcher("engine-ecu")
+	ecuWatcher.OnField("temperature", e.makeTemperatureHandler("engine-ecu", "temperature"))
+	ecuWatcher.StartWithSync(ctx)
+	e.watchers = append(e.watchers, ecuWatcher)
+
+	log.Printf("[EventDetector] Started %d HashWatchers", len(e.watchers))
+
+	// Block until context is done
+	<-ctx.Done()
+
+	// Stop all watchers
+	for _, watcher := range e.watchers {
+		watcher.Stop()
+	}
+}
+
+// makeBatteryChargeHandler creates a handler for battery charge field
+func (e *EventDetector) makeBatteryChargeHandler(battery string) func(string) error {
+	return func(value string) error {
+		stateKey := battery + ":charge"
+		presentKey := battery + ":present"
+		chargeInt := parseInt(value)
+
+		// Only emit battery_critical if battery is present
+		present := e.lastState[presentKey]
+		if present == "true" && chargeInt <= 10 && e.lastState[stateKey] != value {
+			e.sendEvent(context.Background(), "battery_critical", map[string]interface{}{
+				"battery": battery,
+				"charge":  chargeInt,
+			})
 		}
+
+		e.lastState[stateKey] = value
+		return nil
 	}
 }
 
-// checkForEvents examines state changes for event-worthy conditions
-func (e *EventDetector) checkForEvents(ctx context.Context, channel string) {
-	// Channel name is the key name
-	key := channel
-
-	switch key {
-	case "battery:0", "battery:1":
-		e.checkBatteryCritical(ctx, key)
-	case "power-manager":
-		e.checkPowerStateChange(ctx)
-	case "internet":
-		e.checkConnectivityChange(ctx)
-	case "vehicle":
-		e.checkLockStateChange(ctx)
-	case "gps":
-		e.checkGPSStateChange(ctx)
-	case "engine-ecu":
-		e.checkTemperatureWarning(ctx, key)
+// makeBatteryPresentHandler creates a handler for battery present field
+func (e *EventDetector) makeBatteryPresentHandler(battery string) func(string) error {
+	return func(value string) error {
+		stateKey := battery + ":present"
+		e.lastState[stateKey] = value
+		return nil
 	}
 }
 
-// checkBatteryCritical detects low battery condition
-func (e *EventDetector) checkBatteryCritical(ctx context.Context, key string) {
-	charge, _ := e.redisClient.HGet(ctx, key, "charge").Result()
-	present, _ := e.redisClient.HGet(ctx, key, "present").Result()
+// handlePowerState handles power manager state changes
+func (e *EventDetector) handlePowerState(value string) error {
+	stateKey := "power:state"
 
-	if present != "true" {
-		return
-	}
-
-	chargeInt := parseInt(charge)
-	if chargeInt <= 10 && e.lastState[key+":charge"] != charge {
-		e.sendEvent(ctx, "battery_critical", map[string]interface{}{
-			"battery": key,
-			"charge":  chargeInt,
+	if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
+		e.sendEvent(context.Background(), "power_state_change", map[string]interface{}{
+			"from": e.lastState[stateKey],
+			"to":   value,
 		})
 	}
 
-	e.lastState[key+":charge"] = charge
+	e.lastState[stateKey] = value
+	return nil
 }
 
-// checkPowerStateChange detects power state transitions
-func (e *EventDetector) checkPowerStateChange(ctx context.Context) {
-	state, _ := e.redisClient.HGet(ctx, "power-manager", "state").Result()
+// handleConnectivityStatus handles internet status changes
+func (e *EventDetector) handleConnectivityStatus(value string) error {
+	stateKey := "internet:status"
 
-	if e.lastState["power:state"] != "" && e.lastState["power:state"] != state {
-		e.sendEvent(ctx, "power_state_change", map[string]interface{}{
-			"from": e.lastState["power:state"],
-			"to":   state,
-		})
-	}
-
-	e.lastState["power:state"] = state
-}
-
-// checkConnectivityChange detects connectivity state transitions
-func (e *EventDetector) checkConnectivityChange(ctx context.Context) {
-	status, _ := e.redisClient.HGet(ctx, "internet", "status").Result()
-
-	if e.lastState["internet:status"] != "" && e.lastState["internet:status"] != status {
+	if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
 		eventType := "connectivity_lost"
-		if status == "connected" {
+		if value == "connected" {
 			eventType = "connectivity_regained"
 		}
 
-		e.sendEvent(ctx, eventType, map[string]interface{}{
-			"status": status,
+		e.sendEvent(context.Background(), eventType, map[string]interface{}{
+			"status": value,
 		})
 	}
 
-	e.lastState["internet:status"] = status
+	e.lastState[stateKey] = value
+	return nil
 }
 
-// checkLockStateChange detects lock state changes
-func (e *EventDetector) checkLockStateChange(ctx context.Context) {
-	handlebar, _ := e.redisClient.HGet(ctx, "vehicle", "handlebar:lock-sensor").Result()
-	seatbox, _ := e.redisClient.HGet(ctx, "vehicle", "seatbox:lock").Result()
+// makeHandlebarLockHandler creates a handler for handlebar lock sensor
+func (e *EventDetector) makeHandlebarLockHandler() func(string) error {
+	return func(value string) error {
+		stateKey := "vehicle:handlebar"
 
-	if e.lastState["vehicle:handlebar"] != "" && e.lastState["vehicle:handlebar"] != handlebar {
-		e.sendEvent(ctx, "lock_state_change", map[string]interface{}{
-			"lock":  "handlebar",
-			"state": handlebar,
-		})
+		if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
+			e.sendEvent(context.Background(), "lock_state_change", map[string]interface{}{
+				"lock":  "handlebar",
+				"state": value,
+			})
+		}
+
+		e.lastState[stateKey] = value
+		return nil
 	}
-
-	if e.lastState["vehicle:seatbox"] != "" && e.lastState["vehicle:seatbox"] != seatbox {
-		e.sendEvent(ctx, "lock_state_change", map[string]interface{}{
-			"lock":  "seatbox",
-			"state": seatbox,
-		})
-	}
-
-	e.lastState["vehicle:handlebar"] = handlebar
-	e.lastState["vehicle:seatbox"] = seatbox
 }
 
-// checkGPSStateChange detects GPS fix state changes
-func (e *EventDetector) checkGPSStateChange(ctx context.Context) {
-	state, _ := e.redisClient.HGet(ctx, "gps", "state").Result()
+// makeSeatboxLockHandler creates a handler for seatbox lock
+func (e *EventDetector) makeSeatboxLockHandler() func(string) error {
+	return func(value string) error {
+		stateKey := "vehicle:seatbox"
 
-	if e.lastState["gps:state"] != "" && e.lastState["gps:state"] != state {
+		if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
+			e.sendEvent(context.Background(), "lock_state_change", map[string]interface{}{
+				"lock":  "seatbox",
+				"state": value,
+			})
+		}
+
+		e.lastState[stateKey] = value
+		return nil
+	}
+}
+
+// handleGPSState handles GPS state changes
+func (e *EventDetector) handleGPSState(value string) error {
+	stateKey := "gps:state"
+
+	if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
 		eventType := "gps_fix_lost"
-		if state == "fix-3d" || state == "fix-2d" {
+		if value == "fix-3d" || value == "fix-2d" {
 			eventType = "gps_fix_regained"
 		}
 
-		e.sendEvent(ctx, eventType, map[string]interface{}{
-			"state": state,
+		e.sendEvent(context.Background(), eventType, map[string]interface{}{
+			"state": value,
 		})
 	}
 
-	e.lastState["gps:state"] = state
+	e.lastState[stateKey] = value
+	return nil
 }
 
-// checkTemperatureWarning detects overheating conditions
-func (e *EventDetector) checkTemperatureWarning(ctx context.Context, key string) {
-	temp, _ := e.redisClient.HGet(ctx, key, "temperature").Result()
-	tempInt := parseInt(temp)
+// makeTemperatureHandler creates a handler for temperature warnings
+func (e *EventDetector) makeTemperatureHandler(component, field string) func(string) error {
+	return func(value string) error {
+		stateKey := component + ":" + field
+		tempInt := parseInt(value)
 
-	// Warn if temperature > 80°C
-	if tempInt > 80 && e.lastState[key+":temp"] != temp {
-		e.sendEvent(ctx, "temperature_warning", map[string]interface{}{
-			"component":   key,
-			"temperature": tempInt,
-		})
-	}
-
-	// Also check battery temperatures
-	if key == "battery:0" || key == "battery:1" {
-		for i := 0; i < 4; i++ {
-			tempKey := fmt.Sprintf("temperature:%d", i)
-			temp, _ := e.redisClient.HGet(ctx, key, tempKey).Result()
-			tempInt := parseInt(temp)
-
-			if tempInt > 60 {
-				e.sendEvent(ctx, "temperature_warning", map[string]interface{}{
-					"component":   key,
-					"sensor":      i,
-					"temperature": tempInt,
-				})
-			}
+		threshold := 80
+		if component == "battery:0" || component == "battery:1" {
+			threshold = 60
 		}
-	}
 
-	e.lastState[key+":temp"] = temp
+		if tempInt > threshold && e.lastState[stateKey] != value {
+			e.sendEvent(context.Background(), "temperature_warning", map[string]interface{}{
+				"component":   component,
+				"temperature": tempInt,
+			})
+		}
+
+		e.lastState[stateKey] = value
+		return nil
+	}
 }
 
 // sendEvent sends an event, buffering if not connected

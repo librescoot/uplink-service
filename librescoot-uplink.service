@@ -1,0 +1,15 @@
+[Unit]
+Description=LibreScoot Uplink Service (Redis-IPC)
+After=network.target redis.service
+Requires=redis.service
+ConditionPathExists=/data/uplink.yml
+
+[Service]
+Type=simple
+WorkingDirectory=/data
+ExecStart=/usr/bin/uplink-service -config /data/uplink.yml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

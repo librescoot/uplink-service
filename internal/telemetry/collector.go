@@ -4,19 +4,19 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/go-redis/redis/v8"
+	ipc "github.com/librescoot/redis-ipc"
 )
 
 // Collector reads comprehensive state from Redis
 type Collector struct {
-	redisClient *redis.Client
-	ctx         context.Context
+	client *ipc.Client
+	ctx    context.Context
 }
 
 // NewCollector creates a new telemetry collector
-func NewCollector(redisClient *redis.Client) *Collector {
+func NewCollector(client *ipc.Client) *Collector {
 	return &Collector{
-		redisClient: redisClient,
+		client: client,
 	}
 }
 
@@ -60,12 +60,12 @@ func (c *Collector) CollectKeyState(ctx context.Context, keyName string) (map[st
 
 // collectKey reads a single Redis key, passing through all fields
 func (c *Collector) collectKey(ctx context.Context, keyName string) (map[string]interface{}, error) {
-	data, err := c.redisClient.HGetAll(ctx, keyName).Result()
+	data, err := c.client.HGetAll(ctx, keyName)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[string]interface{})
+	result := make(map[string]interface{}, len(data))
 	for field, value := range data {
 		result[field] = value
 	}
