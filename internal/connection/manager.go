@@ -104,6 +104,7 @@ func (m *Manager) connect(ctx context.Context) error {
 
 	dialer := websocket.Dialer{
 		EnableCompression: true,
+		HandshakeTimeout:  10 * time.Second,
 	}
 	conn, _, err := dialer.Dial(m.config.Uplink.ServerURL, nil)
 	if err != nil {
