@@ -8,8 +8,11 @@ Scooter-side client for librescoot uplink system. Maintains persistent connectio
 - Exponential backoff (1s → 2s → 4s → ... → 5min max)
 - Token-based authentication (VIN + token)
 - Real-time telemetry from Redis via redis-ipc library
+  - Nested object format for state and change messages
+  - Baseline initialization to prevent duplicate change notifications
+  - Configurable debounce to batch rapid changes
 - Event detection with persistent buffering (battery critical, power state changes, GPS, etc.)
-- Command reception and execution
+- Command reception and execution (unlock, lock, reboot, ping)
 - Connection statistics tracking
 - Configurable keepalive and debounce intervals
 
@@ -60,9 +63,11 @@ redis_url: "localhost:6379"
 ### Client → Server Messages
 
 - **auth**: Authenticate on connection
-- **telemetry**: Send telemetry data
+- **state**: Full telemetry state snapshot (on connect)
+- **change**: Delta updates (field-level changes)
+- **event**: Critical events (battery critical, connectivity lost, etc.)
 - **keepalive**: Keepalive ping
-- **command_response**: Response to server command (TODO)
+- **command_response**: Response to server command
 
 ### Server → Client Messages
 
@@ -102,8 +107,9 @@ redis_url: "localhost:6379"
 ```
 
 **Components:**
-- **Monitor**: Watches 12 Redis hashes, debounces changes, sends telemetry updates
+- **Monitor**: Watches 12 Redis hashes, debounces changes, sends delta updates to server
 - **EventDetector**: Watches for critical events (battery low, power state changes, GPS fix, etc.)
+- **CommandHandler**: Receives and executes commands (unlock/lock/reboot/ping) via Redis IPC
 - **HashWatcher**: redis-ipc abstraction for PUBSUB + HGET with automatic debouncing
 
 ## Development
@@ -124,13 +130,15 @@ uplink-service/
 └── bin/                    # Built binaries (not in git)
 ```
 
-## TODO
+## Deployment
 
-- [ ] Add command response sending
-- [ ] Implement actual command execution (unlock/lock/reboot)
-- [ ] Add Yocto recipe
-- [ ] Add integration tests
+A Yocto/BitBake recipe is available at:
+```
+meta-librescoot/recipes-core/uplink-service/uplink-service.bb
+```
+
+The service is deployed as a systemd unit (`librescoot-uplink.service`) and expects configuration at `/data/uplink.yml`.
 
 ## License
 
-AGPL-3.0 (matches librescoot project)
+[AGPL-3.0](LICENSE)
