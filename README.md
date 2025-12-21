@@ -12,7 +12,7 @@ Scooter-side client for librescoot uplink system. Maintains persistent connectio
   - Baseline initialization to prevent duplicate change notifications
   - Configurable debounce to batch rapid changes
 - Event detection with persistent buffering (battery critical, power state changes, GPS, etc.)
-- Command reception and execution (unlock, lock, reboot, ping)
+- Command reception and execution (unlock, lock, reboot, hibernate, ping)
 - Connection statistics tracking
 - Configurable keepalive and debounce intervals
 
@@ -57,6 +57,20 @@ redis_url: "localhost:6379"
 ```bash
 ./bin/uplink-service -config /etc/librescoot/uplink.yml
 ```
+
+## Commands
+
+The uplink service supports these commands from the server:
+
+| Command | Queue | Description |
+|---------|-------|-------------|
+| `unlock` | `scooter:state` | Unlocks the vehicle (via vehicle-service) |
+| `lock` | `scooter:state` | Locks the vehicle (via vehicle-service) |
+| `reboot` | `scooter:power` | Initiates system reboot (via pm-service) |
+| `hibernate` | `scooter:power` | Enters hibernation mode (via pm-service) |
+| `ping` | - | No-op command for testing connectivity |
+
+All commands return a `command_response` message with status "success" or "failed".
 
 ## Protocol
 
