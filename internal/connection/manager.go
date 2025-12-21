@@ -356,7 +356,7 @@ func (m *Manager) keepaliveLoop(stopSignal <-chan struct{}) {
 }
 
 // SendState sends full state snapshot
-func (m *Manager) SendState(data map[string]interface{}) error {
+func (m *Manager) SendState(data map[string]any) error {
 	if !m.IsConnected() {
 		return fmt.Errorf("not connected")
 	}
@@ -383,7 +383,7 @@ func (m *Manager) SendState(data map[string]interface{}) error {
 }
 
 // SendChange sends field-level deltas
-func (m *Manager) SendChange(changes map[string]interface{}) error {
+func (m *Manager) SendChange(changes map[string]any) error {
 	if !m.IsConnected() {
 		return fmt.Errorf("not connected")
 	}
@@ -410,7 +410,7 @@ func (m *Manager) SendChange(changes map[string]interface{}) error {
 }
 
 // SendEvent sends critical event
-func (m *Manager) SendEvent(eventType string, data map[string]interface{}) error {
+func (m *Manager) SendEvent(eventType string, data map[string]any) error {
 	if !m.IsConnected() {
 		return fmt.Errorf("not connected")
 	}
@@ -471,7 +471,7 @@ func (m *Manager) IsConnected() bool {
 }
 
 // GetStats returns connection statistics
-func (m *Manager) GetStats() map[string]interface{} {
+func (m *Manager) GetStats() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -485,7 +485,7 @@ func (m *Manager) GetStats() map[string]interface{} {
 		idle = time.Since(m.lastMessage)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"connected":       m.connected,
 		"authenticated":   m.authenticated,
 		"uptime":          uptime.String(),

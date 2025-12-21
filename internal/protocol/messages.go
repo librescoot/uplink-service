@@ -47,14 +47,14 @@ type AuthResponse struct {
 // StateMessage - Client sends full state snapshot
 type StateMessage struct {
 	Type      MessageType            `json:"type"`
-	Data      map[string]interface{} `json:"data"`
+	Data      map[string]any `json:"data"`
 	Timestamp string                 `json:"timestamp"`
 }
 
 // ChangeMessage - Client sends field-level deltas
 type ChangeMessage struct {
 	Type      MessageType            `json:"type"`
-	Changes   map[string]interface{} `json:"changes"`
+	Changes   map[string]any `json:"changes"`
 	Timestamp string                 `json:"timestamp"`
 }
 
@@ -62,7 +62,7 @@ type ChangeMessage struct {
 type EventMessage struct {
 	Type      MessageType            `json:"type"`
 	Event     string                 `json:"event"`
-	Data      map[string]interface{} `json:"data"`
+	Data      map[string]any `json:"data"`
 	Timestamp string                 `json:"timestamp"`
 }
 
@@ -77,7 +77,7 @@ type CommandMessage struct {
 	Type      MessageType            `json:"type"`
 	RequestID string                 `json:"request_id"`
 	Command   string                 `json:"command"`
-	Params    map[string]interface{} `json:"params,omitempty"`
+	Params    map[string]any `json:"params,omitempty"`
 	Timestamp string                 `json:"timestamp"`
 }
 
@@ -86,7 +86,7 @@ type CommandResponse struct {
 	Type      MessageType            `json:"type"`
 	RequestID string                 `json:"request_id"`
 	Status    string                 `json:"status"`
-	Result    map[string]interface{} `json:"result,omitempty"`
+	Result    map[string]any `json:"result,omitempty"`
 	Error     string                 `json:"error,omitempty"`
 	Timestamp string                 `json:"timestamp"`
 }

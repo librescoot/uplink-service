@@ -20,10 +20,10 @@ func NewCollector(client *ipc.Client) *Collector {
 }
 
 // CollectState reads all telemetry fields from Redis (~50 fields)
-func (c *Collector) CollectState(ctx context.Context) (map[string]interface{}, error) {
+func (c *Collector) CollectState(ctx context.Context) (map[string]any, error) {
 	c.ctx = ctx
 
-	state := make(map[string]interface{})
+	state := make(map[string]any)
 
 	// Read all Redis keys and flatten into state map
 	keys := []string{
@@ -43,13 +43,13 @@ func (c *Collector) CollectState(ctx context.Context) (map[string]interface{}, e
 }
 
 // CollectKeyState reads state for a single Redis key
-func (c *Collector) CollectKeyState(ctx context.Context, keyName string) (map[string]interface{}, error) {
+func (c *Collector) CollectKeyState(ctx context.Context, keyName string) (map[string]any, error) {
 	keyData, err := c.collectKey(ctx, keyName)
 	if err != nil {
 		return nil, err
 	}
 
-	state := make(map[string]interface{})
+	state := make(map[string]any)
 	if len(keyData) > 0 {
 		state[keyName] = keyData
 	}
@@ -58,13 +58,13 @@ func (c *Collector) CollectKeyState(ctx context.Context, keyName string) (map[st
 }
 
 // collectKey reads a single Redis key, passing through all fields
-func (c *Collector) collectKey(ctx context.Context, keyName string) (map[string]interface{}, error) {
+func (c *Collector) collectKey(ctx context.Context, keyName string) (map[string]any, error) {
 	data, err := c.client.HGetAll(keyName)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[string]interface{}, len(data))
+	result := make(map[string]any, len(data))
 	for field, value := range data {
 		result[field] = value
 	}
