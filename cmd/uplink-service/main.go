@@ -58,9 +58,6 @@ func main() {
 		ipc.WithAddress(redisAddr),
 		ipc.WithPort(redisPort),
 		ipc.WithCodec(ipc.StringCodec{}),
-		ipc.WithOnConnect(func() {
-			log.Println("Connected to Redis")
-		}),
 		ipc.WithOnDisconnect(func(err error) {
 			if err != nil {
 				log.Printf("Redis disconnected: %v", err)
@@ -83,13 +80,18 @@ func main() {
 		log.Fatalf("Failed to start connection manager: %v", err)
 	}
 
-	// Wait for connection, then send initial state snapshot
+	// Wait for connection, then start watchers and send initial state snapshot
 	go func() {
 		for !connMgr.IsConnected() {
 			time.Sleep(1 * time.Second)
 		}
 
-		log.Println("[Main] Connection established, sending initial state snapshot...")
+		log.Println("[Main] Connection established, starting watchers...")
+		// Start monitoring components first to avoid race condition
+		go monitor.Start(ctx)
+		go eventDetector.Start(ctx)
+
+		log.Println("[Main] Collecting and sending initial state snapshot...")
 		state, err := collector.CollectState(ctx)
 		if err != nil {
 			log.Printf("[Main] Failed to collect initial state: %v", err)
@@ -98,10 +100,6 @@ func main() {
 				log.Printf("[Main] Failed to send initial state: %v", err)
 			}
 		}
-
-		// Start monitoring components
-		go monitor.Start(ctx)
-		go eventDetector.Start(ctx)
 	}()
 
 	cmdHandler.Start(ctx)

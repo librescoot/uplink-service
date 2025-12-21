@@ -49,39 +49,39 @@ func (e *EventDetector) Start(ctx context.Context) {
 		w.OnField("charge", e.makeBatteryChargeHandler(battery))
 		w.OnField("present", e.makeBatteryPresentHandler(battery))
 		w.OnField("temperature", e.makeTemperatureHandler(battery, "temperature"))
-		w.StartWithSync()
+		w.Start()
 		e.watchers = append(e.watchers, w)
 	}
 
 	// Power manager watcher
 	pmWatcher := e.client.NewHashWatcher("power-manager")
 	pmWatcher.OnField("state", e.handlePowerState)
-	pmWatcher.StartWithSync()
+	pmWatcher.Start()
 	e.watchers = append(e.watchers, pmWatcher)
 
 	// Internet watcher
 	internetWatcher := e.client.NewHashWatcher("internet")
 	internetWatcher.OnField("status", e.handleConnectivityStatus)
-	internetWatcher.StartWithSync()
+	internetWatcher.Start()
 	e.watchers = append(e.watchers, internetWatcher)
 
 	// Vehicle watcher
 	vehicleWatcher := e.client.NewHashWatcher("vehicle")
 	vehicleWatcher.OnField("handlebar:lock-sensor", e.makeHandlebarLockHandler())
 	vehicleWatcher.OnField("seatbox:lock", e.makeSeatboxLockHandler())
-	vehicleWatcher.StartWithSync()
+	vehicleWatcher.Start()
 	e.watchers = append(e.watchers, vehicleWatcher)
 
 	// GPS watcher
 	gpsWatcher := e.client.NewHashWatcher("gps")
 	gpsWatcher.OnField("state", e.handleGPSState)
-	gpsWatcher.StartWithSync()
+	gpsWatcher.Start()
 	e.watchers = append(e.watchers, gpsWatcher)
 
 	// Engine ECU watcher
 	ecuWatcher := e.client.NewHashWatcher("engine-ecu")
 	ecuWatcher.OnField("temperature", e.makeTemperatureHandler("engine-ecu", "temperature"))
-	ecuWatcher.StartWithSync()
+	ecuWatcher.Start()
 	e.watchers = append(e.watchers, ecuWatcher)
 
 	log.Printf("[EventDetector] Started %d HashWatchers", len(e.watchers))
@@ -105,7 +105,7 @@ func (e *EventDetector) makeBatteryChargeHandler(battery string) func(string) er
 		// Only emit battery_critical if battery is present
 		present := e.lastState[presentKey]
 		if present == "true" && chargeInt <= 10 && e.lastState[stateKey] != value {
-			e.sendEvent(context.Background(), "battery_critical", map[string]interface{}{
+			e.sendEvent(context.Background(), "battery_critical", map[string]any{
 				"battery": battery,
 				"charge":  chargeInt,
 			})
@@ -130,7 +130,7 @@ func (e *EventDetector) handlePowerState(value string) error {
 	stateKey := "power:state"
 
 	if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
-		e.sendEvent(context.Background(), "power_state_change", map[string]interface{}{
+		e.sendEvent(context.Background(), "power_state_change", map[string]any{
 			"from": e.lastState[stateKey],
 			"to":   value,
 		})
@@ -150,7 +150,7 @@ func (e *EventDetector) handleConnectivityStatus(value string) error {
 			eventType = "connectivity_regained"
 		}
 
-		e.sendEvent(context.Background(), eventType, map[string]interface{}{
+		e.sendEvent(context.Background(), eventType, map[string]any{
 			"status": value,
 		})
 	}
@@ -165,7 +165,7 @@ func (e *EventDetector) makeHandlebarLockHandler() func(string) error {
 		stateKey := "vehicle:handlebar"
 
 		if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
-			e.sendEvent(context.Background(), "lock_state_change", map[string]interface{}{
+			e.sendEvent(context.Background(), "lock_state_change", map[string]any{
 				"lock":  "handlebar",
 				"state": value,
 			})
@@ -182,7 +182,7 @@ func (e *EventDetector) makeSeatboxLockHandler() func(string) error {
 		stateKey := "vehicle:seatbox"
 
 		if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
-			e.sendEvent(context.Background(), "lock_state_change", map[string]interface{}{
+			e.sendEvent(context.Background(), "lock_state_change", map[string]any{
 				"lock":  "seatbox",
 				"state": value,
 			})
@@ -203,7 +203,7 @@ func (e *EventDetector) handleGPSState(value string) error {
 			eventType = "gps_fix_regained"
 		}
 
-		e.sendEvent(context.Background(), eventType, map[string]interface{}{
+		e.sendEvent(context.Background(), eventType, map[string]any{
 			"state": value,
 		})
 	}
@@ -224,7 +224,7 @@ func (e *EventDetector) makeTemperatureHandler(component, field string) func(str
 		}
 
 		if tempInt > threshold && e.lastState[stateKey] != value {
-			e.sendEvent(context.Background(), "temperature_warning", map[string]interface{}{
+			e.sendEvent(context.Background(), "temperature_warning", map[string]any{
 				"component":   component,
 				"temperature": tempInt,
 			})
@@ -236,10 +236,10 @@ func (e *EventDetector) makeTemperatureHandler(component, field string) func(str
 }
 
 // sendEvent sends an event, buffering if not connected
-func (e *EventDetector) sendEvent(ctx context.Context, eventType string, data map[string]interface{}) {
+func (e *EventDetector) sendEvent(ctx context.Context, eventType string, data map[string]any) {
 	log.Printf("[EventDetector] EVENT: %s", eventType)
 
-	event := map[string]interface{}{
+	event := map[string]any{
 		"event":     eventType,
 		"data":      data,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -258,7 +258,7 @@ func (e *EventDetector) sendEvent(ctx context.Context, eventType string, data ma
 }
 
 // bufferEvent writes an event to persistent storage
-func (e *EventDetector) bufferEvent(event map[string]interface{}) {
+func (e *EventDetector) bufferEvent(event map[string]any) {
 	// Ensure directory exists
 	dir := filepath.Dir(e.bufferPath)
 	os.MkdirAll(dir, 0755)
@@ -313,14 +313,14 @@ func (e *EventDetector) flushBufferedEvents(ctx context.Context) {
 			continue
 		}
 
-		var event map[string]interface{}
+		var event map[string]any
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			log.Printf("[EventDetector] Failed to parse buffered event: %v", err)
 			continue
 		}
 
 		eventType, _ := event["event"].(string)
-		eventData, _ := event["data"].(map[string]interface{})
+		eventData, _ := event["data"].(map[string]any)
 
 		if err := e.connMgr.SendEvent(eventType, eventData); err != nil {
 			log.Printf("[EventDetector] Failed to send buffered event: %v", err)

@@ -20,7 +20,8 @@ type Monitor struct {
 
 	mu             sync.Mutex
 	watchers       []*ipc.HashWatcher
-	pendingChanges map[string]interface{}
+	pendingChanges map[string]any
+	lastValues     map[string]string
 	debounceTimer  *time.Timer
 }
 
@@ -31,7 +32,8 @@ func NewMonitor(client *ipc.Client, collector *Collector, connMgr *connection.Ma
 		collector:      collector,
 		connMgr:        connMgr,
 		debounce:       debounce,
-		pendingChanges: make(map[string]interface{}),
+		pendingChanges: make(map[string]any),
+		lastValues:     make(map[string]string),
 	}
 }
 
@@ -52,7 +54,7 @@ func (m *Monitor) Start(ctx context.Context) {
 		watcher.OnAny(func(field, value string) error {
 			return m.handleFieldChange(channel, field, value)
 		})
-		watcher.StartWithSync()
+		watcher.Start()
 		m.watchers = append(m.watchers, watcher)
 	}
 
@@ -76,16 +78,22 @@ func (m *Monitor) handleFieldChange(hash, field, value string) error {
 		return nil
 	}
 
-	log.Printf("[Monitor] Change: %s = %s", fullKey, value)
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Check if value actually changed
+	if m.lastValues[fullKey] == value {
+		return nil
+	}
+	m.lastValues[fullKey] = value
+
+	log.Printf("[Monitor] Change: %s = %s", fullKey, value)
+
 	// Add to pending changes as nested structure
 	if m.pendingChanges[hash] == nil {
-		m.pendingChanges[hash] = make(map[string]interface{})
+		m.pendingChanges[hash] = make(map[string]any)
 	}
-	m.pendingChanges[hash].(map[string]interface{})[field] = value
+	m.pendingChanges[hash].(map[string]any)[field] = value
 
 	// Reset/start debounce timer
 	if m.debounceTimer != nil {
@@ -136,5 +144,5 @@ func (m *Monitor) flushChanges() {
 		log.Printf("[Monitor] Failed to send changes: %v", err)
 	}
 
-	m.pendingChanges = make(map[string]interface{})
+	m.pendingChanges = make(map[string]any)
 }
