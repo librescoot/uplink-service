@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	ipc "github.com/librescoot/redis-ipc"
@@ -17,6 +18,7 @@ type Monitor struct {
 	connMgr   *connection.Manager
 	debounce  time.Duration
 
+	mu             sync.Mutex
 	watchers       []*ipc.HashWatcher
 	pendingChanges map[string]interface{}
 	debounceTimer  *time.Timer
@@ -76,6 +78,9 @@ func (m *Monitor) handleFieldChange(hash, field, value string) error {
 
 	log.Printf("[Monitor] Change: %s = %s", fullKey, value)
 
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Add to pending changes as nested structure
 	if m.pendingChanges[hash] == nil {
 		m.pendingChanges[hash] = make(map[string]interface{})
@@ -118,6 +123,9 @@ func (m *Monitor) shouldNotifyKey(fullKey string) bool {
 
 // flushChanges sends pending changes and clears the buffer
 func (m *Monitor) flushChanges() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if len(m.pendingChanges) == 0 {
 		return
 	}
