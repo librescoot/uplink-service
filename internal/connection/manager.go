@@ -17,7 +17,6 @@ import (
 const (
 	initialRetryDelay = 1 * time.Second
 	retryMultiplier   = 2.0
-	version           = "1.0.0"
 	protocolVersion   = 0
 )
 
@@ -64,7 +63,6 @@ func NewManager(cfg *config.Config) *Manager {
 
 // Start starts the connection manager
 func (m *Manager) Start(ctx context.Context) error {
-	log.Printf("[ConnectionManager] Starting uplink-service v%s", version)
 	log.Printf("[ConnectionManager] Server: %s", m.config.Uplink.ServerURL)
 	log.Printf("[ConnectionManager] Identifier: %s", m.config.Scooter.Identifier)
 
@@ -173,7 +171,6 @@ func (m *Manager) authenticate() error {
 		Type:            protocol.MsgTypeAuth,
 		Identifier:      m.config.Scooter.Identifier,
 		Token:           m.config.Scooter.Token,
-		Version:         version,
 		ProtocolVersion: protocolVersion,
 		Timestamp:       protocol.Timestamp(),
 	}

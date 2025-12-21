@@ -31,7 +31,6 @@ type AuthMessage struct {
 	Type            MessageType `json:"type"`
 	Identifier      string      `json:"identifier"`
 	Token           string      `json:"token"`
-	Version         string      `json:"version"`
 	ProtocolVersion int         `json:"protocol_version"`
 	Timestamp       string      `json:"timestamp"`
 }

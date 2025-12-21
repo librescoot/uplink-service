@@ -31,7 +31,7 @@ func main() {
 	} else {
 		log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	}
-	log.Printf("Starting uplink-service v%s", version)
+	log.Printf("Starting uplink-service %s", version)
 
 	// Load configuration
 	cfg, err := config.Load(*configPath)
@@ -72,6 +72,7 @@ func main() {
 	}
 
 	// Initialize components
+	connection.Version = version
 	connMgr := connection.NewManager(cfg)
 	collector := telemetry.NewCollector(client)
 	monitor := telemetry.NewMonitor(client, collector, connMgr, cfg.Telemetry.GetDebounceDuration())
