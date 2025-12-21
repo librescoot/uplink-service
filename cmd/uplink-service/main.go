@@ -35,8 +35,6 @@ func main() {
 	}
 
 	log.Printf("Loaded config from %s", *configPath)
-	log.Printf("Server: %s", cfg.Uplink.ServerURL)
-	log.Printf("Identifier: %s", cfg.Scooter.Identifier)
 
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -80,25 +78,33 @@ func main() {
 		log.Fatalf("Failed to start connection manager: %v", err)
 	}
 
-	// Wait for connection, then start watchers and send initial state snapshot
+	// Wait for connection, start watchers, then collect state and initialize baselines
 	go func() {
 		for !connMgr.IsConnected() {
 			time.Sleep(1 * time.Second)
 		}
 
+		// Start watchers first to avoid missing changes during state collection
 		log.Println("[Main] Connection established, starting watchers...")
-		// Start monitoring components first to avoid race condition
 		go monitor.Start(ctx)
 		go eventDetector.Start(ctx)
 
-		log.Println("[Main] Collecting and sending initial state snapshot...")
+		// Collect state snapshot
+		log.Println("[Main] Collecting state snapshot...")
 		state, err := collector.CollectState(ctx)
 		if err != nil {
 			log.Printf("[Main] Failed to collect initial state: %v", err)
-		} else {
-			if err := connMgr.SendState(state); err != nil {
-				log.Printf("[Main] Failed to send initial state: %v", err)
-			}
+			return
+		}
+
+		// Initialize change trackers with current state to filter duplicates
+		monitor.InitializeBaseline(state)
+		eventDetector.InitializeBaseline(state)
+
+		// Send state snapshot to server
+		log.Println("[Main] Sending initial state snapshot...")
+		if err := connMgr.SendState(state); err != nil {
+			log.Printf("[Main] Failed to send initial state: %v", err)
 		}
 	}()
 

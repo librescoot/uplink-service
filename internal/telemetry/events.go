@@ -36,6 +36,21 @@ func NewEventDetector(client *ipc.Client, connMgr *connection.Manager, bufferPat
 	}
 }
 
+// InitializeBaseline sets the initial state from a state snapshot
+func (e *EventDetector) InitializeBaseline(state map[string]any) {
+	for hash, fields := range state {
+		if fieldMap, ok := fields.(map[string]any); ok {
+			for field, value := range fieldMap {
+				stateKey := hash + ":" + field
+				if strVal, ok := value.(string); ok {
+					e.lastState[stateKey] = strVal
+				}
+			}
+		}
+	}
+	log.Printf("[EventDetector] Initialized baseline with %d field values", len(e.lastState))
+}
+
 // Start begins monitoring for events
 func (e *EventDetector) Start(ctx context.Context) {
 	log.Println("[EventDetector] Starting with HashWatchers...")

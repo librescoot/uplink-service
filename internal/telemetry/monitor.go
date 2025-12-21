@@ -37,6 +37,24 @@ func NewMonitor(client *ipc.Client, collector *Collector, connMgr *connection.Ma
 	}
 }
 
+// InitializeBaseline sets the initial values from a state snapshot
+func (m *Monitor) InitializeBaseline(state map[string]any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for hash, fields := range state {
+		if fieldMap, ok := fields.(map[string]any); ok {
+			for field, value := range fieldMap {
+				fullKey := hash + "[" + field + "]"
+				if strVal, ok := value.(string); ok {
+					m.lastValues[fullKey] = strVal
+				}
+			}
+		}
+	}
+	log.Printf("[Monitor] Initialized baseline with %d field values", len(m.lastValues))
+}
+
 // Start begins monitoring Redis for changes
 func (m *Monitor) Start(ctx context.Context) {
 	log.Println("[Monitor] Starting Redis PUBSUB monitoring with HashWatchers...")
