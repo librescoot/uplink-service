@@ -19,7 +19,7 @@ import (
 	"github.com/librescoot/uplink-service/internal/telemetry"
 )
 
-const version = "1.0.0"
+var version = "dev" // Set via ldflags at build time
 
 func main() {
 	configPath := flag.String("config", "/etc/librescoot/uplink.yml", "Path to configuration file")
