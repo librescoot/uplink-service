@@ -56,7 +56,9 @@ func (h *Handler) executeCommand(cmd *protocol.CommandMessage) {
 	case "lock":
 		err = h.sendVehicleCommand("lock")
 	case "reboot":
-		err = h.rebootVehicle()
+		err = h.sendPowerCommand("reboot")
+	case "hibernate":
+		err = h.sendPowerCommand("hibernate")
 	case "ping":
 		err = nil // Success - no action needed
 	default:
@@ -77,11 +79,14 @@ func (h *Handler) sendVehicleCommand(cmd string) error {
 	return nil
 }
 
-// rebootVehicle initiates vehicle hibernation (safe reboot)
-func (h *Handler) rebootVehicle() error {
-	log.Printf("[CommandHandler] Initiating vehicle hibernation")
-	// Use lock-hibernate as safe reboot mechanism
-	return h.sendVehicleCommand("lock-hibernate")
+// sendPowerCommand sends a power command to the pm-service queue
+func (h *Handler) sendPowerCommand(cmd string) error {
+	log.Printf("[CommandHandler] Sending power command: %s", cmd)
+	if err := ipc.SendRequest(h.client, "scooter:power", cmd); err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+	log.Printf("[CommandHandler] Power command sent successfully: %s", cmd)
+	return nil
 }
 
 // sendResponse sends a command response back to the server
