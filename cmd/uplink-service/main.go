@@ -25,7 +25,12 @@ func main() {
 	configPath := flag.String("config", "/etc/librescoot/uplink.yml", "Path to configuration file")
 	flag.Parse()
 
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	// Skip timestamps if running under systemd/journald
+	if os.Getenv("JOURNAL_STREAM") != "" {
+		log.SetFlags(0)
+	} else {
+		log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	}
 	log.Printf("Starting uplink-service v%s", version)
 
 	// Load configuration
