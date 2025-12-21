@@ -29,6 +29,8 @@ type BaseMessage struct {
 // AuthMessage - Client authenticates with server
 type AuthMessage struct {
 	Type            MessageType `json:"type"`
+	Client          string      `json:"client"`
+	Version         string      `json:"version"`
 	Identifier      string      `json:"identifier"`
 	Token           string      `json:"token"`
 	ProtocolVersion int         `json:"protocol_version"`

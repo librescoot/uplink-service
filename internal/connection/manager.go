@@ -22,9 +22,10 @@ const (
 
 // Manager manages the connection to the uplink server
 type Manager struct {
-	config *config.Config
-	conn   *websocket.Conn
-	mu     sync.RWMutex
+	config  *config.Config
+	version string
+	conn    *websocket.Conn
+	mu      sync.RWMutex
 
 	// State
 	connected     bool
@@ -50,9 +51,10 @@ type Manager struct {
 }
 
 // NewManager creates a new connection manager
-func NewManager(cfg *config.Config) *Manager {
+func NewManager(cfg *config.Config, version string) *Manager {
 	return &Manager{
 		config:      cfg,
+		version:     version,
 		retryDelay:  initialRetryDelay,
 		sendChan:    make(chan []byte, 256),
 		receiveChan: make(chan []byte, 256),
@@ -169,6 +171,8 @@ func (m *Manager) connect(ctx context.Context) error {
 func (m *Manager) authenticate() error {
 	authMsg := protocol.AuthMessage{
 		Type:            protocol.MsgTypeAuth,
+		Client:          "librescoot-uplink",
+		Version:         m.version,
 		Identifier:      m.config.Scooter.Identifier,
 		Token:           m.config.Scooter.Token,
 		ProtocolVersion: protocolVersion,

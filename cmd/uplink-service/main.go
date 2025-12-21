@@ -72,8 +72,7 @@ func main() {
 	}
 
 	// Initialize components
-	connection.Version = version
-	connMgr := connection.NewManager(cfg)
+	connMgr := connection.NewManager(cfg, version)
 	collector := telemetry.NewCollector(client)
 	monitor := telemetry.NewMonitor(client, collector, connMgr, cfg.Telemetry.GetDebounceDuration())
 	eventDetector := telemetry.NewEventDetector(client, connMgr, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
