@@ -76,7 +76,7 @@ func main() {
 	collector := telemetry.NewCollector(client)
 	monitor := telemetry.NewMonitor(client, collector, connMgr, cfg.Telemetry.GetDebounceDuration())
 	eventDetector := telemetry.NewEventDetector(client, connMgr, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
-	cmdHandler := commands.NewHandler(connMgr)
+	cmdHandler := commands.NewHandler(connMgr, client)
 
 	// Start connection manager
 	if err := connMgr.Start(ctx); err != nil {

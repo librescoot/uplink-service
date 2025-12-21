@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"context"
-	"fmt"
 
 	ipc "github.com/librescoot/redis-ipc"
 )
@@ -35,8 +34,8 @@ func (c *Collector) CollectState(ctx context.Context) (map[string]interface{}, e
 
 	for _, key := range keys {
 		keyState, _ := c.collectKey(ctx, key)
-		for field, value := range keyState {
-			state[fmt.Sprintf("%s[%s]", key, field)] = value
+		if len(keyState) > 0 {
+			state[key] = keyState
 		}
 	}
 
@@ -51,8 +50,8 @@ func (c *Collector) CollectKeyState(ctx context.Context, keyName string) (map[st
 	}
 
 	state := make(map[string]interface{})
-	for field, value := range keyData {
-		state[fmt.Sprintf("%s[%s]", keyName, field)] = value
+	if len(keyData) > 0 {
+		state[keyName] = keyData
 	}
 
 	return state, nil
@@ -60,7 +59,7 @@ func (c *Collector) CollectKeyState(ctx context.Context, keyName string) (map[st
 
 // collectKey reads a single Redis key, passing through all fields
 func (c *Collector) collectKey(ctx context.Context, keyName string) (map[string]interface{}, error) {
-	data, err := c.client.HGetAll(ctx, keyName)
+	data, err := c.client.HGetAll(keyName)
 	if err != nil {
 		return nil, err
 	}

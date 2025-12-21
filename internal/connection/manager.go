@@ -436,6 +436,27 @@ func (m *Manager) SendEvent(eventType string, data map[string]interface{}) error
 	}
 }
 
+// SendCommandResponse sends a response to a server command
+func (m *Manager) SendCommandResponse(resp *protocol.CommandResponse) error {
+	if !m.IsConnected() {
+		return fmt.Errorf("not connected")
+	}
+
+	msgData, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshal command response failed: %w", err)
+	}
+
+	select {
+	case m.sendChan <- msgData:
+		m.incrementCommandsRecv() // Track command responses
+		log.Printf("[ConnectionManager] Sent command response: %s (status=%s)", resp.RequestID, resp.Status)
+		return nil
+	default:
+		return fmt.Errorf("send channel full")
+	}
+}
+
 // CommandChannel returns the channel for receiving commands
 func (m *Manager) CommandChannel() <-chan *protocol.CommandMessage {
 	return m.cmdChan

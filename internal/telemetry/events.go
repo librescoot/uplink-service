@@ -49,39 +49,39 @@ func (e *EventDetector) Start(ctx context.Context) {
 		w.OnField("charge", e.makeBatteryChargeHandler(battery))
 		w.OnField("present", e.makeBatteryPresentHandler(battery))
 		w.OnField("temperature", e.makeTemperatureHandler(battery, "temperature"))
-		w.StartWithSync(ctx)
+		w.StartWithSync()
 		e.watchers = append(e.watchers, w)
 	}
 
 	// Power manager watcher
 	pmWatcher := e.client.NewHashWatcher("power-manager")
 	pmWatcher.OnField("state", e.handlePowerState)
-	pmWatcher.StartWithSync(ctx)
+	pmWatcher.StartWithSync()
 	e.watchers = append(e.watchers, pmWatcher)
 
 	// Internet watcher
 	internetWatcher := e.client.NewHashWatcher("internet")
 	internetWatcher.OnField("status", e.handleConnectivityStatus)
-	internetWatcher.StartWithSync(ctx)
+	internetWatcher.StartWithSync()
 	e.watchers = append(e.watchers, internetWatcher)
 
 	// Vehicle watcher
 	vehicleWatcher := e.client.NewHashWatcher("vehicle")
 	vehicleWatcher.OnField("handlebar:lock-sensor", e.makeHandlebarLockHandler())
 	vehicleWatcher.OnField("seatbox:lock", e.makeSeatboxLockHandler())
-	vehicleWatcher.StartWithSync(ctx)
+	vehicleWatcher.StartWithSync()
 	e.watchers = append(e.watchers, vehicleWatcher)
 
 	// GPS watcher
 	gpsWatcher := e.client.NewHashWatcher("gps")
 	gpsWatcher.OnField("state", e.handleGPSState)
-	gpsWatcher.StartWithSync(ctx)
+	gpsWatcher.StartWithSync()
 	e.watchers = append(e.watchers, gpsWatcher)
 
 	// Engine ECU watcher
 	ecuWatcher := e.client.NewHashWatcher("engine-ecu")
 	ecuWatcher.OnField("temperature", e.makeTemperatureHandler("engine-ecu", "temperature"))
-	ecuWatcher.StartWithSync(ctx)
+	ecuWatcher.StartWithSync()
 	e.watchers = append(e.watchers, ecuWatcher)
 
 	log.Printf("[EventDetector] Started %d HashWatchers", len(e.watchers))

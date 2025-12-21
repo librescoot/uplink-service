@@ -50,7 +50,7 @@ func (m *Monitor) Start(ctx context.Context) {
 		watcher.OnAny(func(field, value string) error {
 			return m.handleFieldChange(channel, field, value)
 		})
-		watcher.StartWithSync(ctx)
+		watcher.StartWithSync()
 		m.watchers = append(m.watchers, watcher)
 	}
 
@@ -76,8 +76,11 @@ func (m *Monitor) handleFieldChange(hash, field, value string) error {
 
 	log.Printf("[Monitor] Change: %s = %s", fullKey, value)
 
-	// Add to pending changes
-	m.pendingChanges[fullKey] = value
+	// Add to pending changes as nested structure
+	if m.pendingChanges[hash] == nil {
+		m.pendingChanges[hash] = make(map[string]interface{})
+	}
+	m.pendingChanges[hash].(map[string]interface{})[field] = value
 
 	// Reset/start debounce timer
 	if m.debounceTimer != nil {

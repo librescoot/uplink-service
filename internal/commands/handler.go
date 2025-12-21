@@ -2,73 +2,106 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"log"
+
+	ipc "github.com/librescoot/redis-ipc"
 
 	"github.com/librescoot/uplink-service/internal/connection"
 	"github.com/librescoot/uplink-service/internal/protocol"
 )
 
-// Handler handles incoming commands from the server
+// Handler receives and executes commands from the server
 type Handler struct {
 	connMgr *connection.Manager
+	client  *ipc.Client
 	ctx     context.Context
 }
 
 // NewHandler creates a new command handler
-func NewHandler(connMgr *connection.Manager) *Handler {
+func NewHandler(connMgr *connection.Manager, client *ipc.Client) *Handler {
 	return &Handler{
 		connMgr: connMgr,
+		client:  client,
 	}
 }
 
-// Start starts the command handler
+// Start begins handling commands
 func (h *Handler) Start(ctx context.Context) {
 	h.ctx = ctx
 	log.Println("[CommandHandler] Starting...")
-
 	go h.handleLoop()
 }
 
-// handleLoop processes incoming commands
+// handleLoop processes commands from the command channel
 func (h *Handler) handleLoop() {
 	for {
 		select {
 		case <-h.ctx.Done():
 			return
 		case cmd := <-h.connMgr.CommandChannel():
-			if err := h.handleCommand(cmd); err != nil {
-				log.Printf("[CommandHandler] Failed to handle command %s: %v", cmd.Command, err)
-			}
+			h.executeCommand(cmd)
 		}
 	}
 }
 
-// handleCommand processes a single command
-func (h *Handler) handleCommand(cmd *protocol.CommandMessage) error {
-	log.Printf("[CommandHandler] Handling command: %s (request_id=%s)", cmd.Command, cmd.RequestID)
+// executeCommand executes a command and sends response
+func (h *Handler) executeCommand(cmd *protocol.CommandMessage) {
+	log.Printf("[CommandHandler] Executing: %s (req_id=%s)", cmd.Command, cmd.RequestID)
 
+	var err error
 	switch cmd.Command {
 	case "unlock":
-		log.Println("[CommandHandler] Executing unlock command")
-		// TODO: Implement actual unlock via librescoot
-
+		err = h.sendVehicleCommand("unlock")
 	case "lock":
-		log.Println("[CommandHandler] Executing lock command")
-		// TODO: Implement actual lock via librescoot
-
+		err = h.sendVehicleCommand("lock")
 	case "reboot":
-		log.Println("[CommandHandler] Executing reboot command")
-		// TODO: Implement actual reboot
-
+		err = h.rebootVehicle()
 	case "ping":
-		log.Println("[CommandHandler] Executing ping command")
-		// Simple ping/pong
-
+		err = nil // Success - no action needed
 	default:
-		log.Printf("[CommandHandler] Unknown command: %s", cmd.Command)
+		err = fmt.Errorf("unknown command: %s", cmd.Command)
 	}
 
-	// TODO: Send command response back to server
+	// Send response
+	h.sendResponse(cmd.RequestID, cmd.Command, err)
+}
 
+// sendVehicleCommand sends a state command to the vehicle-service queue
+func (h *Handler) sendVehicleCommand(cmd string) error {
+	log.Printf("[CommandHandler] Sending vehicle command: %s", cmd)
+	if err := ipc.SendRequest(h.client, "scooter:state", cmd); err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+	log.Printf("[CommandHandler] Command sent successfully: %s", cmd)
 	return nil
+}
+
+// rebootVehicle initiates vehicle hibernation (safe reboot)
+func (h *Handler) rebootVehicle() error {
+	log.Printf("[CommandHandler] Initiating vehicle hibernation")
+	// Use lock-hibernate as safe reboot mechanism
+	return h.sendVehicleCommand("lock-hibernate")
+}
+
+// sendResponse sends a command response back to the server
+func (h *Handler) sendResponse(requestID, command string, err error) {
+	resp := &protocol.CommandResponse{
+		Type:      protocol.MsgTypeCommandResponse,
+		RequestID: requestID,
+		Timestamp: protocol.Timestamp(),
+	}
+
+	if err != nil {
+		resp.Status = "failed"
+		resp.Error = err.Error()
+		log.Printf("[CommandHandler] Command %s failed: %v", command, err)
+	} else {
+		resp.Status = "success"
+		log.Printf("[CommandHandler] Command %s succeeded", command)
+	}
+
+	if sendErr := h.connMgr.SendCommandResponse(resp); sendErr != nil {
+		log.Printf("[CommandHandler] Failed to send response: %v", sendErr)
+	}
 }
