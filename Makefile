@@ -1,27 +1,37 @@
-.PHONY: all deps build client clean test
+BINARY_NAME := uplink-service
+BUILD_DIR := bin
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS := -ldflags "-w -s -X main.version=$(VERSION)"
+MAIN := ./cmd/uplink-service
 
-all: build
+.PHONY: build build-arm build-host dist clean test fmt deps lint run
 
-deps:
-	go mod download
-	go mod tidy
+build:
+	mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN)
 
-build: client
+build-arm: build
 
-client:
-	go build -o bin/uplink-service ./cmd/uplink-service
+build-host:
+	mkdir -p $(BUILD_DIR)
+	go build -ldflags "-X main.version=$(VERSION)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN)
 
-client-linux-amd64:
-	GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bin/uplink-service-amd64 ./cmd/uplink-service
-
-client-linux-arm:
-	GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -o bin/uplink-service-arm ./cmd/uplink-service
+dist: build
 
 clean:
-	rm -rf bin/
+	rm -rf $(BUILD_DIR)
 
 test:
 	go test -v ./...
 
-run:
-	./bin/uplink-service -config configs/uplink.example.yml
+fmt:
+	go fmt ./...
+
+deps:
+	go mod download && go mod tidy
+
+lint:
+	golangci-lint run
+
+run: build-host
+	./$(BUILD_DIR)/$(BINARY_NAME) -config configs/uplink.example.yml
