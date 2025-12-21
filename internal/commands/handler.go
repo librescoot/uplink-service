@@ -95,12 +95,13 @@ func (h *Handler) sendResponse(requestID, command string, err error) {
 	if err != nil {
 		resp.Status = "failed"
 		resp.Error = err.Error()
-		log.Printf("[CommandHandler] Command %s failed: %v", command, err)
+		log.Printf("[CommandHandler] Command %s (req_id=%s) failed: %v", command, requestID, err)
 	} else {
 		resp.Status = "success"
-		log.Printf("[CommandHandler] Command %s succeeded", command)
+		log.Printf("[CommandHandler] Command %s (req_id=%s) succeeded", command, requestID)
 	}
 
+	log.Printf("[CommandHandler] Sending response: type=%s req_id=%s status=%s", resp.Type, resp.RequestID, resp.Status)
 	if sendErr := h.connMgr.SendCommandResponse(resp); sendErr != nil {
 		log.Printf("[CommandHandler] Failed to send response: %v", sendErr)
 	}
