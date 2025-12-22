@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -23,7 +24,13 @@ var version = "dev" // Set via ldflags at build time
 
 func main() {
 	configPath := flag.String("config", "/etc/librescoot/uplink.yml", "Path to configuration file")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("uplink-service %s\n", version)
+		return
+	}
 
 	// Skip timestamps if running under systemd/journald
 	if os.Getenv("JOURNAL_STREAM") != "" {
