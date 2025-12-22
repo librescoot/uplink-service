@@ -83,40 +83,51 @@ func main() {
 	collector := telemetry.NewCollector(client)
 	monitor := telemetry.NewMonitor(client, collector, connMgr, cfg.Telemetry.GetDebounceDuration())
 	eventDetector := telemetry.NewEventDetector(client, connMgr, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
-	cmdHandler := commands.NewHandler(connMgr, client)
+	cmdHandler := commands.NewHandler(connMgr, client, collector)
 
 	// Start connection manager
 	if err := connMgr.Start(ctx); err != nil {
 		log.Fatalf("Failed to start connection manager: %v", err)
 	}
 
-	// Wait for connection, start watchers, then collect state and initialize baselines
+	// Handle connection events - send full state on every connect/reconnect
 	go func() {
-		for !connMgr.IsConnected() {
-			time.Sleep(1 * time.Second)
-		}
+		firstConnection := true
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-connMgr.ConnectedChannel():
+				if firstConnection {
+					log.Println("[Main] Connection established, starting watchers...")
+					// Start watchers first to avoid missing changes during state collection
+					go monitor.Start(ctx)
+					go eventDetector.Start(ctx)
+				} else {
+					log.Println("[Main] Reconnected")
+				}
 
-		// Start watchers first to avoid missing changes during state collection
-		log.Println("[Main] Connection established, starting watchers...")
-		go monitor.Start(ctx)
-		go eventDetector.Start(ctx)
+				// Collect state snapshot
+				log.Println("[Main] Collecting state snapshot...")
+				state, err := collector.CollectState(ctx)
+				if err != nil {
+					log.Printf("[Main] Failed to collect state: %v", err)
+					continue
+				}
 
-		// Collect state snapshot
-		log.Println("[Main] Collecting state snapshot...")
-		state, err := collector.CollectState(ctx)
-		if err != nil {
-			log.Printf("[Main] Failed to collect initial state: %v", err)
-			return
-		}
+				// Initialize baselines on first connection only
+				if firstConnection {
+					monitor.InitializeBaseline(state)
+					eventDetector.InitializeBaseline(state)
+					firstConnection = false
+				}
 
-		// Initialize change trackers with current state to filter duplicates
-		monitor.InitializeBaseline(state)
-		eventDetector.InitializeBaseline(state)
-
-		// Send state snapshot to server
-		log.Println("[Main] Sending initial state snapshot...")
-		if err := connMgr.SendState(state); err != nil {
-			log.Printf("[Main] Failed to send initial state: %v", err)
+				// Send state snapshot on every connection
+				log.Println("[Main] Sending state snapshot...")
+				if err := connMgr.SendState(state); err != nil {
+					log.Printf("[Main] Failed to send state: %v", err)
+				}
+			}
 		}
 	}()
 

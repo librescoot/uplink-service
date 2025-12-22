@@ -44,10 +44,11 @@ type Manager struct {
 	retryDelay    time.Duration
 
 	// Channels
-	sendChan    chan []byte
-	receiveChan chan []byte
-	cmdChan     chan *protocol.CommandMessage
-	done        chan struct{}
+	sendChan     chan []byte
+	receiveChan  chan []byte
+	cmdChan      chan *protocol.CommandMessage
+	connectedCh  chan struct{}
+	done         chan struct{}
 }
 
 // NewManager creates a new connection manager
@@ -59,6 +60,7 @@ func NewManager(cfg *config.Config, version string) *Manager {
 		sendChan:    make(chan []byte, 256),
 		receiveChan: make(chan []byte, 256),
 		cmdChan:     make(chan *protocol.CommandMessage, 16),
+		connectedCh: make(chan struct{}, 1),
 		done:        make(chan struct{}),
 	}
 }
@@ -471,6 +473,11 @@ func (m *Manager) IsConnected() bool {
 	return m.connected && m.authenticated
 }
 
+// ConnectedChannel returns a channel that signals when connection is established
+func (m *Manager) ConnectedChannel() <-chan struct{} {
+	return m.connectedCh
+}
+
 // GetStats returns connection statistics
 func (m *Manager) GetStats() map[string]any {
 	m.mu.RLock()
@@ -504,10 +511,16 @@ func (m *Manager) GetStats() map[string]any {
 // Helper methods
 func (m *Manager) markConnected() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.connected = true
 	m.connectTime = time.Now()
 	m.retryDelay = initialRetryDelay
+	m.mu.Unlock()
+
+	// Signal connection established (non-blocking)
+	select {
+	case m.connectedCh <- struct{}{}:
+	default:
+	}
 }
 
 func (m *Manager) markDisconnected() {
