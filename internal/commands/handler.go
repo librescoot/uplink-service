@@ -11,18 +11,25 @@ import (
 	"github.com/librescoot/uplink-service/internal/protocol"
 )
 
+// StateCollector interface for collecting telemetry state
+type StateCollector interface {
+	CollectState(ctx context.Context) (map[string]any, error)
+}
+
 // Handler receives and executes commands from the server
 type Handler struct {
-	connMgr *connection.Manager
-	client  *ipc.Client
-	ctx     context.Context
+	connMgr   *connection.Manager
+	client    *ipc.Client
+	collector StateCollector
+	ctx       context.Context
 }
 
 // NewHandler creates a new command handler
-func NewHandler(connMgr *connection.Manager, client *ipc.Client) *Handler {
+func NewHandler(connMgr *connection.Manager, client *ipc.Client, collector StateCollector) *Handler {
 	return &Handler{
-		connMgr: connMgr,
-		client:  client,
+		connMgr:   connMgr,
+		client:    client,
+		collector: collector,
 	}
 }
 
@@ -59,6 +66,8 @@ func (h *Handler) executeCommand(cmd *protocol.CommandMessage) {
 		err = h.sendPowerCommand("reboot")
 	case "hibernate":
 		err = h.sendPowerCommand("hibernate")
+	case "get_state":
+		err = h.sendStateSnapshot()
 	case "ping":
 		err = nil // Success - no action needed
 	default:
@@ -86,6 +95,23 @@ func (h *Handler) sendPowerCommand(cmd string) error {
 		return fmt.Errorf("failed to send command: %w", err)
 	}
 	log.Printf("[CommandHandler] Power command sent successfully: %s", cmd)
+	return nil
+}
+
+// sendStateSnapshot collects and sends current state
+func (h *Handler) sendStateSnapshot() error {
+	log.Printf("[CommandHandler] Collecting state snapshot...")
+	state, err := h.collector.CollectState(h.ctx)
+	if err != nil {
+		return fmt.Errorf("failed to collect state: %w", err)
+	}
+
+	log.Printf("[CommandHandler] Sending state snapshot with %d top-level keys", len(state))
+	if err := h.connMgr.SendState(state); err != nil {
+		return fmt.Errorf("failed to send state: %w", err)
+	}
+
+	log.Printf("[CommandHandler] State snapshot sent successfully")
 	return nil
 }
 
