@@ -16,24 +16,24 @@ import (
 type Priority int
 
 const (
-	Immediate Priority = iota // 1s deadline (critical state)
-	Quick                     // 5s deadline (GPS)
-	Medium                    // 10s deadline (default)
-	Slow                      // 15min deadline (low priority: battery, signal)
+	Immediate Priority = iota
+	Quick
+	Medium
+	Slow
 )
 
 var priorityDeadlines = map[Priority]time.Duration{
 	Immediate: 1 * time.Second,
 	Quick:     5 * time.Second,
-	Medium:    10 * time.Second,
+	Medium:    60 * time.Second,
 	Slow:      15 * time.Minute,
 }
 
 var priorityNames = map[Priority]string{
-	Immediate: "1s",
-	Quick:     "5s",
-	Medium:    "10s",
-	Slow:      "15m",
+	Immediate: "Immediate",
+	Quick:     "Quick",
+	Medium:    "Medium",
+	Slow:      "Slow",
 }
 
 // Field-specific priority mappings
