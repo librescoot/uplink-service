@@ -55,9 +55,6 @@ func (e *EventDetector) InitializeBaseline(state map[string]any) {
 func (e *EventDetector) Start(ctx context.Context) {
 	log.Println("[EventDetector] Starting with HashWatchers...")
 
-	// First, flush any buffered events
-	go e.flushBufferedEvents(ctx)
-
 	// Battery watchers - monitor charge and present fields
 	for _, battery := range []string{"battery:0", "battery:1"} {
 		w := e.client.NewHashWatcher(battery)
@@ -274,6 +271,11 @@ func (e *EventDetector) sendEvent(ctx context.Context, eventType string, data ma
 
 // bufferEvent writes an event to persistent storage
 func (e *EventDetector) bufferEvent(event map[string]any) {
+	// Initialize retry count if not present
+	if _, ok := event["retries"]; !ok {
+		event["retries"] = 0
+	}
+
 	// Ensure directory exists
 	dir := filepath.Dir(e.bufferPath)
 	os.MkdirAll(dir, 0755)
@@ -294,16 +296,15 @@ func (e *EventDetector) bufferEvent(event map[string]any) {
 	log.Printf("[EventDetector] Buffered event to %s", e.bufferPath)
 }
 
-// flushBufferedEvents sends all buffered events
+// FlushBufferedEvents attempts to send all buffered events with retry logic
+func (e *EventDetector) FlushBufferedEvents(ctx context.Context) {
+	e.flushBufferedEvents(ctx)
+}
+
+// flushBufferedEvents sends all buffered events with retry logic
 func (e *EventDetector) flushBufferedEvents(ctx context.Context) {
-	// Wait for connection
-	for !e.connMgr.IsConnected() {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-			continue
-		}
+	if !e.connMgr.IsConnected() {
+		return
 	}
 
 	// Check if buffer file exists
@@ -320,36 +321,83 @@ func (e *EventDetector) flushBufferedEvents(ctx context.Context) {
 		return
 	}
 
-	// Parse and send each event
-	lines := string(data)
-	count := 0
-	for _, line := range splitLines(lines) {
+	// Parse events
+	lines := splitLines(string(data))
+	var failedEvents []map[string]any
+	successCount := 0
+	discardedCount := 0
+
+	for _, line := range lines {
 		if line == "" {
 			continue
 		}
 
 		var event map[string]any
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			log.Printf("[EventDetector] Failed to parse buffered event: %v", err)
+			log.Printf("[EventDetector] Failed to parse buffered event, discarding: %v", err)
+			discardedCount++
 			continue
 		}
 
+		// Get retry count
+		retries := 0
+		if r, ok := event["retries"].(float64); ok {
+			retries = int(r)
+		}
+
+		// Check if exceeded max retries
+		if retries >= e.maxRetries {
+			eventType, _ := event["event"].(string)
+			log.Printf("[EventDetector] Event %s exceeded max retries (%d), discarding", eventType, e.maxRetries)
+			discardedCount++
+			continue
+		}
+
+		// Try to send
 		eventType, _ := event["event"].(string)
 		eventData, _ := event["data"].(map[string]any)
 
 		if err := e.connMgr.SendEvent(eventType, eventData); err != nil {
-			log.Printf("[EventDetector] Failed to send buffered event: %v", err)
-			break
+			log.Printf("[EventDetector] Failed to send buffered event %s (retry %d/%d): %v",
+				eventType, retries+1, e.maxRetries, err)
+			// Increment retry count and save for later
+			event["retries"] = retries + 1
+			failedEvents = append(failedEvents, event)
+			// Exponential backoff delay
+			backoff := time.Duration(1<<uint(retries)) * time.Second
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+			time.Sleep(backoff)
+			continue
 		}
 
-		count++
+		successCount++
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	log.Printf("[EventDetector] Flushed %d buffered events", count)
+	log.Printf("[EventDetector] Flushed %d events, %d failed (will retry), %d discarded",
+		successCount, len(failedEvents), discardedCount)
 
-	// Clear buffer file
-	os.Remove(e.bufferPath)
+	// Rewrite buffer with only failed events
+	if len(failedEvents) > 0 {
+		f, err := os.OpenFile(e.bufferPath, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Printf("[EventDetector] Failed to rewrite buffer: %v", err)
+			return
+		}
+		defer f.Close()
+
+		for _, event := range failedEvents {
+			data, _ := json.Marshal(event)
+			f.Write(data)
+			f.Write([]byte("\n"))
+		}
+		log.Printf("[EventDetector] Rewrote buffer with %d failed events", len(failedEvents))
+	} else {
+		// All sent successfully, remove buffer
+		os.Remove(e.bufferPath)
+	}
 }
 
 // splitLines splits string by newlines

@@ -81,7 +81,7 @@ func main() {
 	// Initialize components
 	connMgr := connection.NewManager(cfg, version)
 	collector := telemetry.NewCollector(client)
-	monitor := telemetry.NewMonitor(client, collector, connMgr, cfg.Telemetry.GetDebounceDuration())
+	monitor := telemetry.NewMonitor(client, collector, connMgr)
 	eventDetector := telemetry.NewEventDetector(client, connMgr, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
 	cmdHandler := commands.NewHandler(connMgr, client, collector)
 
@@ -127,6 +127,10 @@ func main() {
 				if err := connMgr.SendState(state); err != nil {
 					log.Printf("[Main] Failed to send state: %v", err)
 				}
+
+				// Flush any buffered events on every connection
+				log.Println("[Main] Flushing buffered events...")
+				go eventDetector.FlushBufferedEvents(ctx)
 			}
 		}
 	}()
