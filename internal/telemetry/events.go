@@ -262,6 +262,9 @@ func (e *EventDetector) sendEvent(ctx context.Context, eventType string, data ma
 		if err := e.connMgr.SendEvent(eventType, data); err != nil {
 			log.Printf("[EventDetector] Failed to send event, buffering: %v", err)
 			e.bufferEvent(event)
+		} else {
+			// Successfully sent event - flush any buffered events too
+			go e.flushBufferedEvents(ctx)
 		}
 	} else {
 		log.Println("[EventDetector] Not connected, buffering event")
