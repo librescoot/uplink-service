@@ -14,10 +14,16 @@ import (
 	"github.com/librescoot/uplink-service/internal/connection"
 )
 
+// TelemetryMonitor interface for flushing pending changes
+type TelemetryMonitor interface {
+	FlushAllPending()
+}
+
 // EventDetector monitors for critical conditions and sends event messages
 type EventDetector struct {
 	client     *ipc.Client
 	connMgr    *connection.Manager
+	monitor    TelemetryMonitor
 	bufferPath string
 	maxRetries int
 
@@ -26,10 +32,11 @@ type EventDetector struct {
 }
 
 // NewEventDetector creates a new event detector
-func NewEventDetector(client *ipc.Client, connMgr *connection.Manager, bufferPath string, maxRetries int) *EventDetector {
+func NewEventDetector(client *ipc.Client, connMgr *connection.Manager, monitor TelemetryMonitor, bufferPath string, maxRetries int) *EventDetector {
 	return &EventDetector{
 		client:     client,
 		connMgr:    connMgr,
+		monitor:    monitor,
 		bufferPath: bufferPath,
 		maxRetries: maxRetries,
 		lastState:  make(map[string]string),
@@ -263,8 +270,11 @@ func (e *EventDetector) sendEvent(ctx context.Context, eventType string, data ma
 			log.Printf("[EventDetector] Failed to send event, buffering: %v", err)
 			e.bufferEvent(event)
 		} else {
-			// Successfully sent event - flush any buffered events too
+			// Successfully sent event - flush buffered events and pending telemetry
 			go e.flushBufferedEvents(ctx)
+			if e.monitor != nil {
+				go e.monitor.FlushAllPending()
+			}
 		}
 	} else {
 		log.Println("[EventDetector] Not connected, buffering event")

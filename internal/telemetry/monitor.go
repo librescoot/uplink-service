@@ -58,11 +58,17 @@ var hashPriorities = map[string]Priority{
 	"battery:1": Quick,
 }
 
+// EventFlusher interface for flushing buffered events
+type EventFlusher interface {
+	FlushBufferedEvents(ctx context.Context)
+}
+
 // Monitor watches Redis keys for changes and sends deltas
 type Monitor struct {
-	client    *ipc.Client
-	collector *Collector
-	connMgr   *connection.Manager
+	client       *ipc.Client
+	collector    *Collector
+	connMgr      *connection.Manager
+	eventFlusher EventFlusher
 
 	mu       sync.Mutex
 	watchers []*ipc.HashWatcher
@@ -73,6 +79,56 @@ type Monitor struct {
 	priorityTimers    map[Priority]*time.Timer
 
 	lastValues map[string]string
+}
+
+// FlushAllPending immediately flushes all pending changes across all priorities
+func (m *Monitor) FlushAllPending() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Collect all pending changes
+	allPending := make(map[string]any)
+	var allChanges []string
+
+	for prio := Immediate; prio <= Slow; prio++ {
+		pending := m.priorityPending[prio]
+		if len(pending) == 0 {
+			continue
+		}
+
+		// Merge pending changes from this priority
+		for hash, fields := range pending {
+			if allPending[hash] == nil {
+				allPending[hash] = make(map[string]any)
+			}
+			if fieldMap, ok := fields.(map[string]any); ok {
+				for field, value := range fieldMap {
+					allPending[hash].(map[string]any)[field] = value
+					allChanges = append(allChanges, hash+"["+field+"]")
+				}
+			}
+		}
+
+		// Clear this priority's pending changes and timer
+		m.priorityPending[prio] = make(map[string]any)
+		if m.priorityTimers[prio] != nil {
+			m.priorityTimers[prio].Stop()
+			m.priorityTimers[prio] = nil
+		}
+	}
+
+	if len(allPending) == 0 {
+		return
+	}
+
+	// Sort for consistent logging
+	sort.Strings(allChanges)
+
+	log.Printf("[Monitor] Flush (manual): %v", allChanges)
+
+	if err := m.connMgr.SendChange(allPending); err != nil {
+		log.Printf("[Monitor] Failed to send changes: %v", err)
+	}
 }
 
 // NewMonitor creates a new state monitor
@@ -91,6 +147,11 @@ func NewMonitor(client *ipc.Client, collector *Collector, connMgr *connection.Ma
 		priorityTimers: make(map[Priority]*time.Timer),
 		lastValues:     make(map[string]string),
 	}
+}
+
+// SetEventFlusher sets the event flusher for bidirectional flushing
+func (m *Monitor) SetEventFlusher(ef EventFlusher) {
+	m.eventFlusher = ef
 }
 
 // InitializeBaseline sets the initial values from a state snapshot
@@ -274,5 +335,10 @@ func (m *Monitor) flushPriority(priority Priority) {
 
 	if err := m.connMgr.SendChange(allPending); err != nil {
 		log.Printf("[Monitor] Failed to send changes: %v", err)
+	}
+
+	// Also flush buffered events since we're sending anyway
+	if m.eventFlusher != nil {
+		go m.eventFlusher.FlushBufferedEvents(context.Background())
 	}
 }

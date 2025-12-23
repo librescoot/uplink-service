@@ -82,8 +82,11 @@ func main() {
 	connMgr := connection.NewManager(cfg, version)
 	collector := telemetry.NewCollector(client)
 	monitor := telemetry.NewMonitor(client, collector, connMgr)
-	eventDetector := telemetry.NewEventDetector(client, connMgr, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
+	eventDetector := telemetry.NewEventDetector(client, connMgr, monitor, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
 	cmdHandler := commands.NewHandler(connMgr, client, collector)
+
+	// Wire up bidirectional flushing: monitor <-> eventDetector
+	monitor.SetEventFlusher(eventDetector)
 
 	// Start connection manager
 	if err := connMgr.Start(ctx); err != nil {
