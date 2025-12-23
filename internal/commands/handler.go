@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	ipc "github.com/librescoot/redis-ipc"
 
@@ -58,18 +59,62 @@ func (h *Handler) executeCommand(cmd *protocol.CommandMessage) {
 
 	var err error
 	switch cmd.Command {
+	// State commands
 	case "unlock":
-		err = h.sendVehicleCommand("unlock")
+		err = h.sendCommand("scooter:state", "unlock")
 	case "lock":
-		err = h.sendVehicleCommand("lock")
+		err = h.sendCommand("scooter:state", "lock")
+	case "lock_hibernate":
+		err = h.sendCommand("scooter:state", "lock-hibernate")
+	case "force_lock":
+		err = h.sendCommand("scooter:state", "force-lock")
+
+	// Seatbox commands
+	case "open_seatbox":
+		err = h.sendCommand("scooter:seatbox", "open")
+
+	// Horn commands
+	case "honk":
+		err = h.honk(cmd.Params)
+
+	// Blinker commands
+	case "blinker_left":
+		err = h.sendCommand("scooter:blinker", "left")
+	case "blinker_right":
+		err = h.sendCommand("scooter:blinker", "right")
+	case "blinker_both":
+		err = h.sendCommand("scooter:blinker", "both")
+	case "blinker_off":
+		err = h.sendCommand("scooter:blinker", "off")
+
+	// Hardware commands
+	case "dashboard_on":
+		err = h.sendCommand("scooter:hardware", "dashboard:on")
+	case "dashboard_off":
+		err = h.sendCommand("scooter:hardware", "dashboard:off")
+	case "engine_on":
+		err = h.sendCommand("scooter:hardware", "engine:on")
+	case "engine_off":
+		err = h.sendCommand("scooter:hardware", "engine:off")
+	case "handlebar_lock":
+		err = h.sendCommand("scooter:hardware", "handlebar:lock")
+	case "handlebar_unlock":
+		err = h.sendCommand("scooter:hardware", "handlebar:unlock")
+
+	// Power commands
 	case "reboot":
-		err = h.sendPowerCommand("reboot")
+		err = h.sendCommand("scooter:power", "reboot")
 	case "hibernate":
-		err = h.sendPowerCommand("hibernate")
+		err = h.sendCommand("scooter:power", "hibernate")
+	case "hibernate_manual":
+		err = h.sendCommand("scooter:power", "hibernate-manual")
+
+	// Special commands
 	case "get_state":
 		err = h.sendStateSnapshot()
 	case "ping":
 		err = nil // Success - no action needed
+
 	default:
 		err = fmt.Errorf("unknown command: %s", cmd.Command)
 	}
@@ -78,23 +123,39 @@ func (h *Handler) executeCommand(cmd *protocol.CommandMessage) {
 	h.sendResponse(cmd.RequestID, cmd.Command, err)
 }
 
-// sendVehicleCommand sends a state command to the vehicle-service queue
-func (h *Handler) sendVehicleCommand(cmd string) error {
-	log.Printf("[CommandHandler] Sending vehicle command: %s", cmd)
-	if err := ipc.SendRequest(h.client, "scooter:state", cmd); err != nil {
+// sendCommand sends a command to a Redis list queue
+func (h *Handler) sendCommand(queue, cmd string) error {
+	log.Printf("[CommandHandler] Sending to %s: %s", queue, cmd)
+	if err := ipc.SendRequest(h.client, queue, cmd); err != nil {
 		return fmt.Errorf("failed to send command: %w", err)
 	}
-	log.Printf("[CommandHandler] Command sent successfully: %s", cmd)
 	return nil
 }
 
-// sendPowerCommand sends a power command to the pm-service queue
-func (h *Handler) sendPowerCommand(cmd string) error {
-	log.Printf("[CommandHandler] Sending power command: %s", cmd)
-	if err := ipc.SendRequest(h.client, "scooter:power", cmd); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
+// honk turns on the horn for a duration then turns it off
+func (h *Handler) honk(params map[string]any) error {
+	// Get duration parameter (in milliseconds)
+	durationMs, ok := params["duration"].(float64)
+	if !ok {
+		return fmt.Errorf("missing or invalid duration parameter")
 	}
-	log.Printf("[CommandHandler] Power command sent successfully: %s", cmd)
+
+	duration := time.Duration(durationMs) * time.Millisecond
+	log.Printf("[CommandHandler] Honking for %v", duration)
+
+	// Turn horn on
+	if err := h.sendCommand("scooter:horn", "on"); err != nil {
+		return err
+	}
+
+	// Wait for duration
+	time.Sleep(duration)
+
+	// Turn horn off
+	if err := h.sendCommand("scooter:horn", "off"); err != nil {
+		return err
+	}
+
 	return nil
 }
 

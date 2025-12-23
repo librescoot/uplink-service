@@ -405,7 +405,6 @@ func (m *Manager) SendChange(changes map[string]any) error {
 	select {
 	case m.sendChan <- msgData:
 		m.incrementTelemetrySent()
-		log.Printf("[ConnectionManager] Sent %d changes", len(changes))
 		return nil
 	default:
 		return fmt.Errorf("send channel full")

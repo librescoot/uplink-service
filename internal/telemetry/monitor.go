@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -11,28 +12,81 @@ import (
 	"github.com/librescoot/uplink-service/internal/connection"
 )
 
+// Priority defines the flush deadline for telemetry fields
+type Priority int
+
+const (
+	Immediate Priority = iota // 1s deadline (critical state)
+	Quick                     // 5s deadline (GPS)
+	Medium                    // 10s deadline (default)
+	Slow                      // 15min deadline (low priority: battery, signal)
+)
+
+var priorityDeadlines = map[Priority]time.Duration{
+	Immediate: 1 * time.Second,
+	Quick:     5 * time.Second,
+	Medium:    10 * time.Second,
+	Slow:      15 * time.Minute,
+}
+
+var priorityNames = map[Priority]string{
+	Immediate: "1s",
+	Quick:     "5s",
+	Medium:    "10s",
+	Slow:      "15m",
+}
+
+// Field-specific priority mappings
+var fieldPriorities = map[string]Priority{
+	"vehicle[state]":                 Immediate,
+	"vehicle[seatbox:lock]":          Immediate,
+	"vehicle[handlebar:lock-sensor]": Immediate,
+	"vehicle[blinker:state]":         Immediate,
+	"power-manager[state]":           Immediate,
+	"aux-battery[voltage]":           Slow,
+	"cb-battery[cell-voltage]":       Slow,
+	"cb-battery[current]":            Slow,
+	"cb-battery[remaining-capacity]": Slow,
+	"cb-battery[time-to-full]":       Slow,
+	"ble[last-update]":               Slow,
+}
+
+// Hash-level priority mappings
+var hashPriorities = map[string]Priority{
+	"gps": Quick,
+}
+
 // Monitor watches Redis keys for changes and sends deltas
 type Monitor struct {
 	client    *ipc.Client
 	collector *Collector
 	connMgr   *connection.Manager
-	debounce  time.Duration
 
-	mu             sync.Mutex
-	watchers       []*ipc.HashWatcher
-	pendingChanges map[string]any
-	lastValues     map[string]string
-	debounceTimer  *time.Timer
+	mu       sync.Mutex
+	watchers []*ipc.HashWatcher
+
+	// Per-priority configuration and state
+	priorityDeadlines map[Priority]time.Duration
+	priorityPending   map[Priority]map[string]any // priority -> hash -> field -> value
+	priorityTimers    map[Priority]*time.Timer
+
+	lastValues map[string]string
 }
 
 // NewMonitor creates a new state monitor
 func NewMonitor(client *ipc.Client, collector *Collector, connMgr *connection.Manager, debounce time.Duration) *Monitor {
 	return &Monitor{
-		client:         client,
-		collector:      collector,
-		connMgr:        connMgr,
-		debounce:       debounce,
-		pendingChanges: make(map[string]any),
+		client:            client,
+		collector:         collector,
+		connMgr:           connMgr,
+		priorityDeadlines: priorityDeadlines,
+		priorityPending: map[Priority]map[string]any{
+			Immediate: make(map[string]any),
+			Quick:     make(map[string]any),
+			Medium:    make(map[string]any),
+			Slow:      make(map[string]any),
+		},
+		priorityTimers: make(map[Priority]*time.Timer),
 		lastValues:     make(map[string]string),
 	}
 }
@@ -68,7 +122,7 @@ func (m *Monitor) Start(ctx context.Context) {
 
 	for _, channel := range channels {
 		watcher := m.client.NewHashWatcher(channel)
-		watcher.SetDebounce(m.debounce)
+		// No debounce at HashWatcher level - Monitor handles priority-based deadlines
 		watcher.OnAny(func(field, value string) error {
 			return m.handleFieldChange(channel, field, value)
 		})
@@ -105,21 +159,23 @@ func (m *Monitor) handleFieldChange(hash, field, value string) error {
 	}
 	m.lastValues[fullKey] = value
 
-	log.Printf("[Monitor] Change: %s = %s", fullKey, value)
+	// Determine priority for this field
+	priority := m.getFieldPriority(hash, field)
 
-	// Add to pending changes as nested structure
-	if m.pendingChanges[hash] == nil {
-		m.pendingChanges[hash] = make(map[string]any)
+	// Add to priority-specific pending changes as nested structure
+	pending := m.priorityPending[priority]
+	if pending[hash] == nil {
+		pending[hash] = make(map[string]any)
 	}
-	m.pendingChanges[hash].(map[string]any)[field] = value
+	pending[hash].(map[string]any)[field] = value
 
-	// Reset/start debounce timer
-	if m.debounceTimer != nil {
-		m.debounceTimer.Stop()
+	// Start deadline timer if not already running (deadline semantics - no reset!)
+	if m.priorityTimers[priority] == nil {
+		deadline := m.priorityDeadlines[priority]
+		m.priorityTimers[priority] = time.AfterFunc(deadline, func() {
+			m.flushPriority(priority)
+		})
 	}
-	m.debounceTimer = time.AfterFunc(m.debounce, func() {
-		m.flushChanges()
-	})
 
 	return nil
 }
@@ -147,20 +203,57 @@ func (m *Monitor) shouldNotifyKey(fullKey string) bool {
 	return true
 }
 
-// flushChanges sends pending changes and clears the buffer
-func (m *Monitor) flushChanges() {
+// getFieldPriority determines the flush priority for a field
+func (m *Monitor) getFieldPriority(hash, field string) Priority {
+	fullKey := hash + "[" + field + "]"
+
+	// Check exact field match
+	if prio, ok := fieldPriorities[fullKey]; ok {
+		return prio
+	}
+
+	// Check hash-level priority
+	if prio, ok := hashPriorities[hash]; ok {
+		return prio
+	}
+
+	// Default priority
+	return Medium
+}
+
+// flushPriority sends pending changes for a specific priority and clears the buffer
+func (m *Monitor) flushPriority(priority Priority) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if len(m.pendingChanges) == 0 {
+	// Clear the timer reference
+	m.priorityTimers[priority] = nil
+
+	// Get pending changes for this priority
+	pending := m.priorityPending[priority]
+	if len(pending) == 0 {
 		return
 	}
 
-	log.Printf("[Monitor] Flushing %d pending changes", len(m.pendingChanges))
+	// Build change summary for logging
+	var changes []string
+	for hash, fields := range pending {
+		if fieldMap, ok := fields.(map[string]any); ok {
+			for field := range fieldMap {
+				changes = append(changes, hash+"["+field+"]")
+			}
+		}
+	}
 
-	if err := m.connMgr.SendChange(m.pendingChanges); err != nil {
+	// Sort for consistent logging
+	sort.Strings(changes)
+
+	log.Printf("[Monitor] Flush (%s): %v", priorityNames[priority], changes)
+
+	if err := m.connMgr.SendChange(pending); err != nil {
 		log.Printf("[Monitor] Failed to send changes: %v", err)
 	}
 
-	m.pendingChanges = make(map[string]any)
+	// Clear pending changes for this priority
+	m.priorityPending[priority] = make(map[string]any)
 }
