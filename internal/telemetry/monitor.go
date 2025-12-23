@@ -53,7 +53,9 @@ var fieldPriorities = map[string]Priority{
 
 // Hash-level priority mappings
 var hashPriorities = map[string]Priority{
-	"gps": Quick,
+	"gps":       Quick,
+	"battery:0": Quick,
+	"battery:1": Quick,
 }
 
 // Monitor watches Redis keys for changes and sends deltas
@@ -74,7 +76,7 @@ type Monitor struct {
 }
 
 // NewMonitor creates a new state monitor
-func NewMonitor(client *ipc.Client, collector *Collector, connMgr *connection.Manager, debounce time.Duration) *Monitor {
+func NewMonitor(client *ipc.Client, collector *Collector, connMgr *connection.Manager) *Monitor {
 	return &Monitor{
 		client:            client,
 		collector:         collector,
@@ -221,39 +223,56 @@ func (m *Monitor) getFieldPriority(hash, field string) Priority {
 	return Medium
 }
 
-// flushPriority sends pending changes for a specific priority and clears the buffer
+// flushPriority sends ALL pending changes (not just the triggering priority)
 func (m *Monitor) flushPriority(priority Priority) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Clear the timer reference
+	// Clear the timer reference for triggering priority
 	m.priorityTimers[priority] = nil
 
-	// Get pending changes for this priority
-	pending := m.priorityPending[priority]
-	if len(pending) == 0 {
-		return
-	}
+	// Flush ALL priorities that have pending changes
+	allPending := make(map[string]any)
+	var allChanges []string
 
-	// Build change summary for logging
-	var changes []string
-	for hash, fields := range pending {
-		if fieldMap, ok := fields.(map[string]any); ok {
-			for field := range fieldMap {
-				changes = append(changes, hash+"["+field+"]")
+	for prio := Immediate; prio <= Slow; prio++ {
+		pending := m.priorityPending[prio]
+		if len(pending) == 0 {
+			continue
+		}
+
+		// Merge pending changes from this priority
+		for hash, fields := range pending {
+			if allPending[hash] == nil {
+				allPending[hash] = make(map[string]any)
 			}
+			if fieldMap, ok := fields.(map[string]any); ok {
+				for field, value := range fieldMap {
+					allPending[hash].(map[string]any)[field] = value
+					allChanges = append(allChanges, hash+"["+field+"]")
+				}
+			}
+		}
+
+		// Clear this priority's pending changes
+		m.priorityPending[prio] = make(map[string]any)
+		// Clear timer if running (triggered by another priority)
+		if m.priorityTimers[prio] != nil {
+			m.priorityTimers[prio].Stop()
+			m.priorityTimers[prio] = nil
 		}
 	}
 
-	// Sort for consistent logging
-	sort.Strings(changes)
-
-	log.Printf("[Monitor] Flush (%s): %v", priorityNames[priority], changes)
-
-	if err := m.connMgr.SendChange(pending); err != nil {
-		log.Printf("[Monitor] Failed to send changes: %v", err)
+	if len(allPending) == 0 {
+		return
 	}
 
-	// Clear pending changes for this priority
-	m.priorityPending[priority] = make(map[string]any)
+	// Sort for consistent logging
+	sort.Strings(allChanges)
+
+	log.Printf("[Monitor] Flush (triggered by %s): %v", priorityNames[priority], allChanges)
+
+	if err := m.connMgr.SendChange(allPending); err != nil {
+		log.Printf("[Monitor] Failed to send changes: %v", err)
+	}
 }
