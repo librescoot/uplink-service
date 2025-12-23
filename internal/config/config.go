@@ -32,18 +32,8 @@ type ScooterConfig struct {
 
 // TelemetryConfig contains telemetry settings
 type TelemetryConfig struct {
-	DebounceDuration string       `yaml:"debounce_duration"`
-	EventBufferPath  string       `yaml:"event_buffer_path"`
-	EventMaxRetries  int          `yaml:"event_max_retries"`
-}
-
-// GetDebounceDuration parses and returns the debounce duration
-func (c *TelemetryConfig) GetDebounceDuration() time.Duration {
-	d, err := time.ParseDuration(c.DebounceDuration)
-	if err != nil {
-		return 1 * time.Second
-	}
-	return d
+	EventBufferPath string `yaml:"event_buffer_path"`
+	EventMaxRetries int    `yaml:"event_max_retries"`
 }
 
 // GetKeepaliveInterval parses and returns the keepalive interval
@@ -82,9 +72,6 @@ func Load(path string) (*Config, error) {
 	}
 	if config.Uplink.ReconnectMaxDelay == "" {
 		config.Uplink.ReconnectMaxDelay = "5m"
-	}
-	if config.Telemetry.DebounceDuration == "" {
-		config.Telemetry.DebounceDuration = "1s"
 	}
 	if config.Telemetry.EventBufferPath == "" {
 		config.Telemetry.EventBufferPath = "/data/uplink-events.queue"

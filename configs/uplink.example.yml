@@ -8,7 +8,6 @@ scooter:
   token: "YOUR_AUTH_TOKEN_HERE"
 
 telemetry:
-  debounce_duration: "1s"
   event_buffer_path: "/data/uplink-events.queue"
   event_max_retries: 10
 
