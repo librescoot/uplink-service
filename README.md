@@ -11,8 +11,15 @@ Scooter-side client for librescoot uplink system. Maintains persistent connectio
   - Nested object format for state and change messages
   - Baseline initialization to prevent duplicate change notifications
   - Configurable debounce to batch rapid changes
-- Event detection with persistent buffering (battery critical, power state changes, GPS, etc.)
-- Command reception and execution (unlock, lock, reboot, hibernate, ping)
+- Event detection with persistent buffering and retry logic
+  - Battery critical monitoring (traction batteries + control board battery)
+  - Power state changes and NRF reset tracking
+  - GPS fix status changes
+  - Connectivity status monitoring
+  - Temperature monitoring (batteries, ECU)
+  - Fault stream monitoring (events:faults)
+  - Exponential backoff retry (configurable max retries)
+- Command reception and execution (lock/unlock, power, hardware control, etc.)
 - Connection statistics tracking
 - Configurable keepalive and debounce intervals
 
@@ -62,13 +69,50 @@ redis_url: "localhost:6379"
 
 The uplink service supports these commands from the server:
 
+### State Commands
 | Command | Queue | Description |
 |---------|-------|-------------|
-| `unlock` | `scooter:state` | Unlocks the vehicle (via vehicle-service) |
-| `lock` | `scooter:state` | Locks the vehicle (via vehicle-service) |
-| `reboot` | `scooter:power` | Initiates system reboot (via pm-service) |
-| `hibernate` | `scooter:power` | Enters hibernation mode (via pm-service) |
-| `ping` | - | No-op command for testing connectivity |
+| `unlock` | `scooter:state` | Unlocks the vehicle |
+| `lock` | `scooter:state` | Locks the vehicle |
+| `lock_hibernate` | `scooter:state` | Locks and prepares for hibernation |
+| `force_lock` | `scooter:state` | Forces lock regardless of state |
+
+### Seatbox Commands
+| Command | Queue | Description |
+|---------|-------|-------------|
+| `open_seatbox` | `scooter:seatbox` | Opens seatbox lock |
+
+### Horn & Blinker Commands
+| Command | Queue | Description |
+|---------|-------|-------------|
+| `honk` | `scooter:horn` | Activates horn (duration in params) |
+| `blinker_left` | `scooter:blinker` | Activates left blinker |
+| `blinker_right` | `scooter:blinker` | Activates right blinker |
+| `blinker_both` | `scooter:blinker` | Activates hazard lights |
+| `blinker_off` | `scooter:blinker` | Turns off blinkers |
+
+### Hardware Commands
+| Command | Queue | Description |
+|---------|-------|-------------|
+| `dashboard_on` | `scooter:hardware` | Powers on dashboard |
+| `dashboard_off` | `scooter:hardware` | Powers off dashboard |
+| `engine_on` | `scooter:hardware` | Enables engine |
+| `engine_off` | `scooter:hardware` | Disables engine |
+| `handlebar_lock` | `scooter:hardware` | Engages handlebar lock |
+| `handlebar_unlock` | `scooter:hardware` | Releases handlebar lock |
+
+### Power Commands
+| Command | Queue | Description |
+|---------|-------|-------------|
+| `reboot` | `scooter:power` | Initiates system reboot |
+| `hibernate` | `scooter:power` | Enters automatic hibernation |
+| `hibernate_manual` | `scooter:power` | Enters manual hibernation mode |
+
+### Special Commands
+| Command | Queue | Description |
+|---------|-------|-------------|
+| `get_state` | - | Sends full state snapshot |
+| `ping` | - | No-op for testing connectivity |
 
 All commands return a `command_response` message with status "success" or "failed".
 
@@ -109,21 +153,29 @@ All commands return a `command_response` message with status "success" or "faile
     │    Event     │
     │  Detector    │
     │              │
-    │  7 Hash      │
+    │  8 Hash      │
     │  Watchers    │
+    │  + Fault     │
+    │  Stream      │
     └──────────────┘
           │
     ┌─────▼────────┐
     │ Redis (IPC)  │
     │ vehicle, gps │
     │ battery, etc │
+    │ events:fault │
     └──────────────┘
 ```
 
 **Components:**
 - **Monitor**: Watches 12 Redis hashes, debounces changes, sends delta updates to server
-- **EventDetector**: Watches for critical events (battery low, power state changes, GPS fix, etc.)
-- **CommandHandler**: Receives and executes commands (unlock/lock/reboot/ping) via Redis IPC
+- **EventDetector**: Watches 8 Redis hashes + fault stream for critical events
+  - Battery monitoring (traction + CB battery)
+  - Power state and NRF reset tracking
+  - GPS, connectivity, temperature monitoring
+  - Fault stream consumer (events:faults)
+  - Persistent buffering with exponential backoff retry
+- **CommandHandler**: Receives and executes commands via Redis IPC (state, hardware, power, etc.)
 - **HashWatcher**: redis-ipc abstraction for PUBSUB + HGET with automatic debouncing
 
 ## Development
