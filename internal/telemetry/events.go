@@ -3,10 +3,13 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	ipc "github.com/librescoot/redis-ipc"
@@ -21,11 +24,12 @@ type TelemetryMonitor interface {
 
 // EventDetector monitors for critical conditions and sends event messages
 type EventDetector struct {
-	client     *ipc.Client
-	connMgr    *connection.Manager
-	monitor    TelemetryMonitor
-	bufferPath string
-	maxRetries int
+	client        *ipc.Client
+	connMgr       *connection.Manager
+	monitor       TelemetryMonitor
+	bufferPath    string
+	maxRetries    int
+	faultConsumer *ipc.StreamConsumer
 
 	watchers  []*ipc.HashWatcher
 	lastState map[string]string
@@ -75,6 +79,7 @@ func (e *EventDetector) Start(ctx context.Context) {
 	// Power manager watcher
 	pmWatcher := e.client.NewHashWatcher("power-manager")
 	pmWatcher.OnField("state", e.handlePowerState)
+	pmWatcher.OnField("nrf-reset-reason", e.handleNrfReset)
 	pmWatcher.Start()
 	e.watchers = append(e.watchers, pmWatcher)
 
@@ -103,10 +108,27 @@ func (e *EventDetector) Start(ctx context.Context) {
 	ecuWatcher.Start()
 	e.watchers = append(e.watchers, ecuWatcher)
 
+	// CB Battery watcher - monitor control board battery
+	cbBatteryWatcher := e.client.NewHashWatcher("cb-battery")
+	cbBatteryWatcher.OnField("charge", e.makeCBBatteryChargeHandler())
+	cbBatteryWatcher.Start()
+	e.watchers = append(e.watchers, cbBatteryWatcher)
+
 	log.Printf("[EventDetector] Started %d HashWatchers", len(e.watchers))
+
+	// Fault stream consumer - monitor fault events
+	e.faultConsumer = e.client.NewStreamConsumer("events:faults")
+	e.faultConsumer.Handle(e.handleFault)
+	e.faultConsumer.Start("$") // Start from new messages only
+	log.Println("[EventDetector] Started fault stream consumer")
 
 	// Block until context is done
 	<-ctx.Done()
+
+	// Stop fault consumer
+	if e.faultConsumer != nil {
+		e.faultConsumer.Stop()
+	}
 
 	// Stop all watchers
 	for _, watcher := range e.watchers {
@@ -144,6 +166,25 @@ func (e *EventDetector) makeBatteryPresentHandler(battery string) func(string) e
 	}
 }
 
+// makeCBBatteryChargeHandler creates a handler for CB battery charge field
+func (e *EventDetector) makeCBBatteryChargeHandler() func(string) error {
+	return func(value string) error {
+		stateKey := "cb-battery:charge"
+		chargeInt := parseInt(value)
+
+		// Emit event if charge is critical and value changed
+		if chargeInt <= 10 && e.lastState[stateKey] != value {
+			e.sendEvent(context.Background(), "cb_battery_critical", map[string]any{
+				"battery": "cb-battery",
+				"charge":  chargeInt,
+			})
+		}
+
+		e.lastState[stateKey] = value
+		return nil
+	}
+}
+
 // handlePowerState handles power manager state changes
 func (e *EventDetector) handlePowerState(value string) error {
 	stateKey := "power:state"
@@ -152,6 +193,28 @@ func (e *EventDetector) handlePowerState(value string) error {
 		e.sendEvent(context.Background(), "power_state_change", map[string]any{
 			"from": e.lastState[stateKey],
 			"to":   value,
+		})
+	}
+
+	e.lastState[stateKey] = value
+	return nil
+}
+
+// handleNrfReset handles NRF wireless module reset events
+func (e *EventDetector) handleNrfReset(value string) error {
+	stateKey := "power-manager:nrf-reset-reason"
+
+	// Only emit event if reason changed
+	if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
+		reasonInt := parseInt(value)
+
+		// Read reset count from Redis for context
+		countStr, _ := e.client.HGet("power-manager", "nrf-reset-count")
+		countInt := parseInt(countStr)
+
+		e.sendEvent(context.Background(), "nrf_reset", map[string]any{
+			"reason": fmt.Sprintf("0x%x", reasonInt),
+			"count":  countInt,
 		})
 	}
 
@@ -254,9 +317,60 @@ func (e *EventDetector) makeTemperatureHandler(component, field string) func(str
 	}
 }
 
+// handleFault processes fault events from the events:faults stream
+func (e *EventDetector) handleFault(id string, values map[string]string) error {
+	// Require both group and code fields
+	group, hasGroup := values["group"]
+	codeStr, hasCode := values["code"]
+
+	if !hasGroup || !hasCode {
+		log.Printf("[EventDetector] Ignoring fault entry %s: missing required fields", id)
+		return nil
+	}
+
+	// Parse code
+	code := parseInt(codeStr)
+
+	// Build event data
+	eventData := map[string]any{
+		"group": group,
+		"code":  code,
+	}
+
+	// Add description if present
+	if desc, hasDesc := values["description"]; hasDesc {
+		eventData["description"] = desc
+	}
+
+	e.sendEvent(context.Background(), "fault", eventData)
+	return nil
+}
+
+// formatEventContext formats event data as (key=val, key=val) for logging
+func formatEventContext(data map[string]any) string {
+	if len(data) == 0 {
+		return ""
+	}
+
+	// Build context string with sorted keys for consistency
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var parts []string
+	for _, k := range keys {
+		v := data[k]
+		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+	}
+
+	return fmt.Sprintf("(%s)", strings.Join(parts, ", "))
+}
+
 // sendEvent sends an event, buffering if not connected
 func (e *EventDetector) sendEvent(ctx context.Context, eventType string, data map[string]any) {
-	log.Printf("[EventDetector] EVENT: %s", eventType)
+	log.Printf("[EventDetector] Event: %s %s", eventType, formatEventContext(data))
 
 	event := map[string]any{
 		"event":     eventType,
