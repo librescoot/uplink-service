@@ -30,6 +30,7 @@ type EventDetector struct {
 	bufferPath    string
 	maxRetries    int
 	faultConsumer *ipc.StreamConsumer
+	ctx           context.Context
 
 	watchers  []*ipc.HashWatcher
 	lastState map[string]string
@@ -64,6 +65,7 @@ func (e *EventDetector) InitializeBaseline(state map[string]any) {
 
 // Start begins monitoring for events
 func (e *EventDetector) Start(ctx context.Context) {
+	e.ctx = ctx
 	log.Println("[EventDetector] Starting with HashWatchers...")
 
 	// Battery watchers - monitor charge and present fields
@@ -146,7 +148,7 @@ func (e *EventDetector) makeBatteryChargeHandler(battery string) func(string) er
 		// Only emit battery_critical if battery is present
 		present := e.lastState[presentKey]
 		if present == "true" && chargeInt <= 10 && e.lastState[stateKey] != value {
-			e.sendEvent(context.Background(), "battery_critical", map[string]any{
+			e.sendEvent(e.ctx, "battery_critical", map[string]any{
 				"battery": battery,
 				"charge":  chargeInt,
 			})
@@ -174,7 +176,7 @@ func (e *EventDetector) makeCBBatteryChargeHandler() func(string) error {
 
 		// Emit event if charge is critical and value changed
 		if chargeInt <= 10 && e.lastState[stateKey] != value {
-			e.sendEvent(context.Background(), "cb_battery_critical", map[string]any{
+			e.sendEvent(e.ctx, "cb_battery_critical", map[string]any{
 				"battery": "cb-battery",
 				"charge":  chargeInt,
 			})
@@ -190,7 +192,7 @@ func (e *EventDetector) handlePowerState(value string) error {
 	stateKey := "power:state"
 
 	if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
-		e.sendEvent(context.Background(), "power_state_change", map[string]any{
+		e.sendEvent(e.ctx, "power_state_change", map[string]any{
 			"from": e.lastState[stateKey],
 			"to":   value,
 		})
@@ -212,7 +214,7 @@ func (e *EventDetector) handleNrfReset(value string) error {
 		countStr, _ := e.client.HGet("power-manager", "nrf-reset-count")
 		countInt := parseInt(countStr)
 
-		e.sendEvent(context.Background(), "nrf_reset", map[string]any{
+		e.sendEvent(e.ctx, "nrf_reset", map[string]any{
 			"reason": fmt.Sprintf("0x%x", reasonInt),
 			"count":  countInt,
 		})
@@ -232,7 +234,7 @@ func (e *EventDetector) handleConnectivityStatus(value string) error {
 			eventType = "connectivity_regained"
 		}
 
-		e.sendEvent(context.Background(), eventType, map[string]any{
+		e.sendEvent(e.ctx, eventType, map[string]any{
 			"status": value,
 		})
 	}
@@ -247,7 +249,7 @@ func (e *EventDetector) makeHandlebarLockHandler() func(string) error {
 		stateKey := "vehicle:handlebar"
 
 		if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
-			e.sendEvent(context.Background(), "lock_state_change", map[string]any{
+			e.sendEvent(e.ctx, "lock_state_change", map[string]any{
 				"lock":  "handlebar",
 				"state": value,
 			})
@@ -264,7 +266,7 @@ func (e *EventDetector) makeSeatboxLockHandler() func(string) error {
 		stateKey := "vehicle:seatbox"
 
 		if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
-			e.sendEvent(context.Background(), "lock_state_change", map[string]any{
+			e.sendEvent(e.ctx, "lock_state_change", map[string]any{
 				"lock":  "seatbox",
 				"state": value,
 			})
@@ -285,7 +287,7 @@ func (e *EventDetector) handleGPSState(value string) error {
 			eventType = "gps_fix_regained"
 		}
 
-		e.sendEvent(context.Background(), eventType, map[string]any{
+		e.sendEvent(e.ctx, eventType, map[string]any{
 			"state": value,
 		})
 	}
@@ -306,7 +308,7 @@ func (e *EventDetector) makeTemperatureHandler(component, field string) func(str
 		}
 
 		if tempInt > threshold && e.lastState[stateKey] != value {
-			e.sendEvent(context.Background(), "temperature_warning", map[string]any{
+			e.sendEvent(e.ctx, "temperature_warning", map[string]any{
 				"component":   component,
 				"temperature": tempInt,
 			})
@@ -342,7 +344,7 @@ func (e *EventDetector) handleFault(id string, values map[string]string) error {
 		eventData["description"] = desc
 	}
 
-	e.sendEvent(context.Background(), "fault", eventData)
+	e.sendEvent(e.ctx, "fault", eventData)
 	return nil
 }
 

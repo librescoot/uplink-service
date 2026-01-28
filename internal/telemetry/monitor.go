@@ -69,6 +69,7 @@ type Monitor struct {
 	collector    *Collector
 	connMgr      *connection.Manager
 	eventFlusher EventFlusher
+	ctx          context.Context
 
 	mu       sync.Mutex
 	watchers []*ipc.HashWatcher
@@ -174,6 +175,7 @@ func (m *Monitor) InitializeBaseline(state map[string]any) {
 
 // Start begins monitoring Redis for changes
 func (m *Monitor) Start(ctx context.Context) {
+	m.ctx = ctx
 	log.Println("[Monitor] Starting Redis PUBSUB monitoring with HashWatchers...")
 
 	// Create HashWatcher for each monitored key
@@ -339,6 +341,6 @@ func (m *Monitor) flushPriority(priority Priority) {
 
 	// Also flush buffered events since we're sending anyway
 	if m.eventFlusher != nil {
-		go m.eventFlusher.FlushBufferedEvents(context.Background())
+		go m.eventFlusher.FlushBufferedEvents(m.ctx)
 	}
 }
