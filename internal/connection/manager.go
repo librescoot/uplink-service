@@ -59,7 +59,7 @@ func NewManager(cfg *config.Config, version string) *Manager {
 		retryDelay:  initialRetryDelay,
 		sendChan:    make(chan []byte, 256),
 		receiveChan: make(chan []byte, 256),
-		cmdChan:     make(chan *protocol.CommandMessage, 16),
+		cmdChan:     make(chan *protocol.CommandMessage, 256),
 		connectedCh: make(chan struct{}, 1),
 		done:        make(chan struct{}),
 	}
@@ -275,8 +275,6 @@ func (m *Manager) readLoop(readDone chan struct{}, stopSignal <-chan struct{}) {
 			case m.cmdChan <- &cmdMsg:
 			case <-stopSignal:
 				return
-			default:
-				log.Printf("[ConnectionManager] Command channel full, dropping command")
 			}
 
 		default:
