@@ -403,11 +403,12 @@ func (e *EventDetector) bufferEvent(event map[string]any) {
 		event["retries"] = 0
 	}
 
-	// Ensure directory exists
 	dir := filepath.Dir(e.bufferPath)
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("[EventDetector] Failed to create buffer directory: %v", err)
+		return
+	}
 
-	// Open file in append mode
 	f, err := os.OpenFile(e.bufferPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Printf("[EventDetector] Failed to open buffer file: %v", err)
@@ -415,10 +416,19 @@ func (e *EventDetector) bufferEvent(event map[string]any) {
 	}
 	defer f.Close()
 
-	// Write JSON line
-	data, _ := json.Marshal(event)
-	f.Write(data)
-	f.Write([]byte("\n"))
+	data, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("[EventDetector] Failed to marshal event: %v", err)
+		return
+	}
+	if _, err := f.Write(data); err != nil {
+		log.Printf("[EventDetector] Failed to write event to buffer: %v", err)
+		return
+	}
+	if _, err := f.Write([]byte("\n")); err != nil {
+		log.Printf("[EventDetector] Failed to write newline to buffer: %v", err)
+		return
+	}
 
 	log.Printf("[EventDetector] Buffered event to %s", e.bufferPath)
 }
