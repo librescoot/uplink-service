@@ -134,7 +134,6 @@ func (h *Handler) sendCommand(queue, cmd string) error {
 
 // honk turns on the horn for a duration then turns it off
 func (h *Handler) honk(params map[string]any) error {
-	// Get duration parameter (in milliseconds)
 	durationMs, ok := params["duration"].(float64)
 	if !ok {
 		return fmt.Errorf("missing or invalid duration parameter")
@@ -143,18 +142,19 @@ func (h *Handler) honk(params map[string]any) error {
 	duration := time.Duration(durationMs) * time.Millisecond
 	log.Printf("[CommandHandler] Honking for %v", duration)
 
-	// Turn horn on
 	if err := h.sendCommand("scooter:horn", "on"); err != nil {
 		return err
 	}
 
-	// Wait for duration
-	time.Sleep(duration)
-
-	// Turn horn off
-	if err := h.sendCommand("scooter:horn", "off"); err != nil {
-		return err
-	}
+	go func() {
+		select {
+		case <-time.After(duration):
+		case <-h.ctx.Done():
+		}
+		if err := h.sendCommand("scooter:horn", "off"); err != nil {
+			log.Printf("[CommandHandler] Failed to turn off horn: %v", err)
+		}
+	}()
 
 	return nil
 }
