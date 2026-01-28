@@ -301,13 +301,14 @@ func (m *Manager) writeLoop(stopSignal <-chan struct{}) {
 			m.mu.RLock()
 			conn := m.conn
 			connected := m.connected
-			m.mu.RUnlock()
-
 			if conn == nil || !connected {
+				m.mu.RUnlock()
 				continue
 			}
+			err := conn.WriteMessage(websocket.TextMessage, data)
+			m.mu.RUnlock()
 
-			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			if err != nil {
 				log.Printf("[ConnectionManager] Write error: %v", err)
 				return
 			}
