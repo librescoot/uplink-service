@@ -451,7 +451,7 @@ func (m *Manager) SendCommandResponse(resp *protocol.CommandResponse) error {
 
 	select {
 	case m.sendChan <- msgData:
-		m.incrementCommandsRecv() // Track command responses
+		m.incrementMessagesSent()
 		log.Printf("[ConnectionManager] Sent command response: %s (status=%s)", resp.RequestID, resp.Status)
 		return nil
 	default:
