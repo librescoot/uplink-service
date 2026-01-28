@@ -495,12 +495,20 @@ func (e *EventDetector) flushBufferedEvents(ctx context.Context) {
 			if backoff > 30*time.Second {
 				backoff = 30 * time.Second
 			}
-			time.Sleep(backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
 			continue
 		}
 
 		successCount++
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 
 	log.Printf("[EventDetector] Flushed %d events, %d failed (will retry), %d discarded",
