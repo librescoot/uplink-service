@@ -168,17 +168,19 @@ func statsLogger(ctx context.Context, connMgr *connection.Manager) {
 		case <-ticker.C:
 			stats := connMgr.GetStats()
 			connStatus := "disconnected"
-			if stats["connected"].(bool) {
-				if stats["authenticated"].(bool) {
+			if connected, ok := stats["connected"].(bool); ok && connected {
+				if auth, ok := stats["authenticated"].(bool); ok && auth {
 					connStatus = "auth"
 				} else {
 					connStatus = "conn"
 				}
 			}
+			bytesSent, _ := stats["bytes_sent"].(int64)
+			bytesRecv, _ := stats["bytes_received"].(int64)
 			log.Printf("[Stats] %s | ↑%.1fKB ↓%.1fKB | tel:%d cmd:%d | up:%s idle:%s disc:%d",
 				connStatus,
-				float64(stats["bytes_sent"].(int64))/1024,
-				float64(stats["bytes_received"].(int64))/1024,
+				float64(bytesSent)/1024,
+				float64(bytesRecv)/1024,
 				stats["telemetry_sent"], stats["commands_recv"],
 				stats["uptime"], stats["idle"],
 				stats["disconnects"])
