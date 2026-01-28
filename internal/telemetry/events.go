@@ -466,7 +466,7 @@ func (e *EventDetector) flushBufferedEvents(ctx context.Context) {
 	successCount := 0
 	discardedCount := 0
 
-	for _, line := range lines {
+	for i, line := range lines {
 		if line == "" {
 			continue
 		}
@@ -499,20 +499,19 @@ func (e *EventDetector) flushBufferedEvents(ctx context.Context) {
 		if err := e.connMgr.SendEvent(eventType, eventData); err != nil {
 			log.Printf("[EventDetector] Failed to send buffered event %s (retry %d/%d): %v",
 				eventType, retries+1, e.maxRetries, err)
-			// Increment retry count and save for later
 			event["retries"] = retries + 1
 			failedEvents = append(failedEvents, event)
-			// Exponential backoff delay
-			backoff := time.Duration(1<<uint(retries)) * time.Second
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
+			// On send failure, keep remaining events for next flush cycle
+			for _, remaining := range lines[i+1:] {
+				if remaining == "" {
+					continue
+				}
+				var ev map[string]any
+				if err := json.Unmarshal([]byte(remaining), &ev); err == nil {
+					failedEvents = append(failedEvents, ev)
+				}
 			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
-			}
-			continue
+			break
 		}
 
 		successCount++
