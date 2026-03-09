@@ -49,6 +49,10 @@ type Manager struct {
 	cmdChan      chan *protocol.CommandMessage
 	connectedCh  chan struct{}
 	done         chan struct{}
+
+	// StatusCallback is called whenever the connection state changes.
+	// It receives true when fully connected and authenticated, false otherwise.
+	StatusCallback func(connected bool)
 }
 
 // NewManager creates a new connection manager
@@ -512,6 +516,7 @@ func (m *Manager) markConnected() {
 	m.connected = true
 	m.connectTime = time.Now()
 	m.retryDelay = initialRetryDelay
+	cb := m.StatusCallback
 	m.mu.Unlock()
 
 	// Signal connection established (non-blocking)
@@ -519,14 +524,23 @@ func (m *Manager) markConnected() {
 	case m.connectedCh <- struct{}{}:
 	default:
 	}
+
+	if cb != nil {
+		cb(true)
+	}
 }
 
 func (m *Manager) markDisconnected() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.connected = false
 	m.authenticated = false
 	m.disconnects++
+	cb := m.StatusCallback
+	m.mu.Unlock()
+
+	if cb != nil {
+		cb(false)
+	}
 }
 
 func (m *Manager) getRetryDelay() time.Duration {

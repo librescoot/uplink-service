@@ -78,8 +78,23 @@ func main() {
 		log.Fatalf("Failed to create Redis client: %v", err)
 	}
 
+	// Set up cloud status reporting to Redis
+	internetHash := client.Hash("internet")
+	writeCloudStatus := func(connected bool) {
+		status := "disconnected"
+		if connected {
+			status = "connected"
+		}
+		if err := internetHash.Set("unu-cloud", status); err != nil {
+			log.Printf("[Main] Failed to update internet:unu-cloud: %v", err)
+		}
+	}
+	// Report disconnected at startup before the first connection attempt
+	writeCloudStatus(false)
+
 	// Initialize components
 	connMgr := connection.NewManager(cfg, version)
+	connMgr.StatusCallback = writeCloudStatus
 	collector := telemetry.NewCollector(client)
 	monitor := telemetry.NewMonitor(client, collector, connMgr)
 	eventDetector := telemetry.NewEventDetector(client, connMgr, monitor, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
@@ -150,6 +165,7 @@ func main() {
 
 	log.Println("\nShutting down gracefully...")
 	cancel()
+	writeCloudStatus(false)
 
 	// Give goroutines time to clean up
 	time.Sleep(1 * time.Second)
