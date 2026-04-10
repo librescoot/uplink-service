@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +87,10 @@ type Monitor struct {
 func (m *Monitor) FlushAllPending() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if !m.connMgr.IsConnected() {
+		return
+	}
 
 	// Collect all pending changes
 	allPending := make(map[string]any)
@@ -253,8 +258,8 @@ func (m *Monitor) shouldNotifyKey(fullKey string) bool {
 	}
 
 	// For batteries, only notify on charge/state/present
-	if len(fullKey) >= 11 && (fullKey[:11] == "battery:0[" || fullKey[:11] == "battery:1[") {
-		field := fullKey[11 : len(fullKey)-1] // extract field from battery:0[field]
+	if strings.HasPrefix(fullKey, "battery:0[") || strings.HasPrefix(fullKey, "battery:1[") {
+		field := fullKey[10 : len(fullKey)-1]
 		return field == "charge" || field == "state" || field == "present"
 	}
 
@@ -291,8 +296,13 @@ func (m *Monitor) flushPriority(priority Priority) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Clear the timer reference for triggering priority
+	// Clear the timer reference for triggering priority (it has already fired)
 	m.priorityTimers[priority] = nil
+
+	// If not connected, leave pending data intact — it will be flushed on reconnect
+	if !m.connMgr.IsConnected() {
+		return
+	}
 
 	// Flush ALL priorities that have pending changes
 	allPending := make(map[string]any)

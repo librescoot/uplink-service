@@ -146,9 +146,10 @@ func main() {
 					log.Printf("[Main] Failed to send state: %v", err)
 				}
 
-				// Flush any buffered events on every connection
+				// Flush any buffered events and pending telemetry on every connection
 				log.Println("[Main] Flushing buffered events...")
 				go eventDetector.FlushBufferedEvents(ctx)
+				go monitor.FlushAllPending()
 			}
 		}
 	}()
