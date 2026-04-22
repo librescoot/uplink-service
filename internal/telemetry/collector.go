@@ -39,6 +39,19 @@ func (c *Collector) CollectState(ctx context.Context) (map[string]any, error) {
 		}
 	}
 
+	// While vehicle[hop-on-active]=true, vehicle-service publishes state as
+	// "parked" so the dashboard's isParked() keeps working. Externally the
+	// scooter is effectively locked — report it as "stand-by" to the cloud
+	// so the mobile app offers an unlock affordance. Mirrors the override
+	// applied incrementally in Monitor.handleFieldChange.
+	if vehicle, ok := state["vehicle"].(map[string]any); ok {
+		if active, _ := vehicle["hop-on-active"].(string); active == "true" {
+			if _, hasState := vehicle["state"]; hasState {
+				vehicle["state"] = "stand-by"
+			}
+		}
+	}
+
 	return state, nil
 }
 
