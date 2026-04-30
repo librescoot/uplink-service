@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/data/uplink-service -config /data/uplink.yml
+ExecStartPre=/bin/mkdir -p /data/uplink-service
+ExecStart=/data/uplink-service -config /data/uplink-service/uplink.yaml
 Restart=always
 RestartSec=10
 StandardOutput=journal

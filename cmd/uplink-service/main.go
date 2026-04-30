@@ -23,7 +23,7 @@ import (
 var version = "dev" // Set via ldflags at build time
 
 func main() {
-	configPath := flag.String("config", "/etc/librescoot/uplink.yml", "Path to configuration file")
+	configPath := flag.String("config", "/data/uplink-service/uplink.yaml", "Path to configuration file")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 

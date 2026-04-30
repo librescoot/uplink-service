@@ -74,7 +74,7 @@ func Load(path string) (*Config, error) {
 		config.Uplink.ReconnectMaxDelay = "5m"
 	}
 	if config.Telemetry.EventBufferPath == "" {
-		config.Telemetry.EventBufferPath = "/data/uplink-events.queue"
+		config.Telemetry.EventBufferPath = "/data/uplink-service/events.queue"
 	}
 	if config.Telemetry.EventMaxRetries == 0 {
 		config.Telemetry.EventMaxRetries = 5

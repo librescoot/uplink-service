@@ -8,7 +8,7 @@ scooter:
   token: "YOUR_AUTH_TOKEN_HERE"
 
 telemetry:
-  event_buffer_path: "/data/uplink-events.queue"
+  event_buffer_path: "/data/uplink-service/events.queue"
   event_max_retries: 10
 
 redis_url: "localhost:6379"
