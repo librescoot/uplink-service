@@ -29,7 +29,7 @@ func (c *Collector) CollectState(ctx context.Context) (map[string]any, error) {
 	keys := []string{
 		"vehicle", "battery:0", "battery:1", "aux-battery", "cb-battery",
 		"engine-ecu", "power-manager", "internet", "modem", "gps",
-		"keycard", "ble", "dashboard", "system",
+		"keycard", "ble", "dashboard", "system", "ota", "alarm",
 	}
 
 	for _, key := range keys {

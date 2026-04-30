@@ -109,6 +109,18 @@ func (h *Handler) executeCommand(cmd *protocol.CommandMessage) {
 	case "hibernate_manual":
 		err = h.sendCommand("scooter:power", "hibernate-manual")
 
+	// Alarm commands
+	case "alarm_arm":
+		err = h.sendCommand("scooter:alarm", "arm")
+	case "alarm_disarm":
+		err = h.sendCommand("scooter:alarm", "disarm")
+	case "alarm_enable":
+		err = h.sendCommand("scooter:alarm", "enable")
+	case "alarm_disable":
+		err = h.sendCommand("scooter:alarm", "disable")
+	case "alarm_stop":
+		err = h.sendCommand("scooter:alarm", "stop")
+
 	// Special commands
 	case "get_state":
 		err = h.sendStateSnapshot()

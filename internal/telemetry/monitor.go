@@ -44,7 +44,12 @@ var fieldPriorities = map[string]Priority{
 	"vehicle[seatbox:lock]":          Immediate,
 	"vehicle[handlebar:lock-sensor]": Immediate,
 	"vehicle[blinker:state]":         Immediate,
+	"vehicle[main-power]":            Immediate,
+	"vehicle[engine-power]":          Immediate,
 	"power-manager[state]":           Immediate,
+	"ota[status]":                    Immediate,
+	"alarm[status]":                  Immediate,
+	"alarm[alarm-active]":            Immediate,
 	"aux-battery[voltage]":           Slow,
 	"cb-battery[cell-voltage]":       Slow,
 	"cb-battery[current]":            Slow,
@@ -214,7 +219,7 @@ func (m *Monitor) Start(ctx context.Context) {
 	channels := []string{
 		"vehicle", "battery:0", "battery:1", "aux-battery", "cb-battery",
 		"engine-ecu", "gps", "internet", "modem", "power-manager",
-		"keycard", "ble",
+		"keycard", "ble", "ota", "alarm",
 	}
 
 	for _, channel := range channels {

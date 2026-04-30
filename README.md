@@ -17,6 +17,8 @@ Scooter-side client for librescoot uplink system. Maintains persistent connectio
   - GPS fix status changes
   - Connectivity status monitoring
   - Temperature monitoring (batteries, ECU)
+  - OTA update phase transitions
+  - Alarm trigger and state changes
   - Fault stream monitoring (events:faults)
   - Exponential backoff retry (configurable max retries)
 - Command reception and execution (lock/unlock, power, hardware control, etc.)
@@ -108,6 +110,15 @@ The uplink service supports these commands from the server:
 | `hibernate` | `scooter:power` | Enters automatic hibernation |
 | `hibernate_manual` | `scooter:power` | Enters manual hibernation mode |
 
+### Alarm Commands
+| Command | Queue | Description |
+|---------|-------|-------------|
+| `alarm_arm` | `scooter:alarm` | Force-arm at runtime (does not change `alarm.enabled`) |
+| `alarm_disarm` | `scooter:alarm` | Force-disarm at runtime (does not change `alarm.enabled`) |
+| `alarm_enable` | `scooter:alarm` | Enable the alarm system (persists in settings) |
+| `alarm_disable` | `scooter:alarm` | Disable the alarm system (persists in settings) |
+| `alarm_stop` | `scooter:alarm` | Stop an active alarm |
+
 ### Special Commands
 | Command | Queue | Description |
 |---------|-------|-------------|
@@ -145,7 +156,7 @@ All commands return a `command_response` message with status "success" or "faile
     │  Telemetry  │         │   Command    │
     │   Monitor   │         │   Handler    │
     │             │         │              │
-    │ 12 Hash     │         └──────────────┘
+    │ 14 Hash     │         └──────────────┘
     │ Watchers    │
     └─────┬───────┘
           │
@@ -153,7 +164,7 @@ All commands return a `command_response` message with status "success" or "faile
     │    Event     │
     │  Detector    │
     │              │
-    │  8 Hash      │
+    │ 10 Hash      │
     │  Watchers    │
     │  + Fault     │
     │  Stream      │
@@ -169,7 +180,7 @@ All commands return a `command_response` message with status "success" or "faile
 
 **Components:**
 - **Monitor**: Watches 12 Redis hashes, debounces changes, sends delta updates to server
-- **EventDetector**: Watches 8 Redis hashes + fault stream for critical events
+- **EventDetector**: Watches 10 Redis hashes + fault stream for critical events
   - Battery monitoring (traction + CB battery)
   - Power state and NRF reset tracking
   - GPS, connectivity, temperature monitoring

@@ -116,6 +116,19 @@ func (e *EventDetector) Start(ctx context.Context) {
 	cbBatteryWatcher.Start()
 	e.watchers = append(e.watchers, cbBatteryWatcher)
 
+	// OTA status watcher
+	otaWatcher := e.client.NewHashWatcher("ota")
+	otaWatcher.OnField("status", e.handleOTAStatus)
+	otaWatcher.Start()
+	e.watchers = append(e.watchers, otaWatcher)
+
+	// Alarm watcher
+	alarmWatcher := e.client.NewHashWatcher("alarm")
+	alarmWatcher.OnField("alarm-active", e.handleAlarmActive)
+	alarmWatcher.OnField("status", e.handleAlarmStatus)
+	alarmWatcher.Start()
+	e.watchers = append(e.watchers, alarmWatcher)
+
 	log.Printf("[EventDetector] Started %d HashWatchers", len(e.watchers))
 
 	// Fault stream consumer - monitor fault events
@@ -289,6 +302,54 @@ func (e *EventDetector) handleGPSState(value string) error {
 
 		e.sendEvent(e.ctx, eventType, map[string]any{
 			"state": value,
+		})
+	}
+
+	e.lastState[stateKey] = value
+	return nil
+}
+
+// handleOTAStatus handles OTA update phase transitions
+func (e *EventDetector) handleOTAStatus(value string) error {
+	stateKey := "ota:status"
+
+	if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
+		e.sendEvent(e.ctx, "ota_status_change", map[string]any{
+			"from": e.lastState[stateKey],
+			"to":   value,
+		})
+	}
+
+	e.lastState[stateKey] = value
+	return nil
+}
+
+// handleAlarmActive handles alarm trigger transitions
+func (e *EventDetector) handleAlarmActive(value string) error {
+	stateKey := "alarm:alarm-active"
+
+	if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
+		eventType := "alarm_cleared"
+		if value == "true" {
+			eventType = "alarm_triggered"
+		}
+		e.sendEvent(e.ctx, eventType, map[string]any{
+			"active": value,
+		})
+	}
+
+	e.lastState[stateKey] = value
+	return nil
+}
+
+// handleAlarmStatus handles alarm FSM state changes (armed/disarmed/etc.)
+func (e *EventDetector) handleAlarmStatus(value string) error {
+	stateKey := "alarm:status"
+
+	if e.lastState[stateKey] != "" && e.lastState[stateKey] != value {
+		e.sendEvent(e.ctx, "alarm_state_change", map[string]any{
+			"from": e.lastState[stateKey],
+			"to":   value,
 		})
 	}
 
