@@ -39,20 +39,31 @@ func (c *Collector) CollectState(ctx context.Context) (map[string]any, error) {
 		}
 	}
 
-	// While vehicle[hop-on-active]=true, vehicle-service publishes state as
-	// "parked" so the dashboard's isParked() keeps working. Externally the
-	// scooter is effectively locked — report it as "stand-by" to the cloud
-	// so the mobile app offers an unlock affordance. Mirrors the override
-	// applied incrementally in Monitor.handleFieldChange.
+	// vehicle-service publishes the leaf hop-on states directly. Cloud
+	// consumers (and indirectly the mobile app) only know about the
+	// classic states, so collapse "hop-on" -> "stand-by" (locked) and
+	// "hop-on-learning" -> "parked" (user is interacting). Mirrors the
+	// remap applied incrementally in Monitor.handleFieldChange.
 	if vehicle, ok := state["vehicle"].(map[string]any); ok {
-		if active, _ := vehicle["hop-on-active"].(string); active == "true" {
-			if _, hasState := vehicle["state"]; hasState {
-				vehicle["state"] = "stand-by"
-			}
+		if raw, hasState := vehicle["state"].(string); hasState {
+			vehicle["state"] = cloudifyVehicleState(raw)
 		}
 	}
 
 	return state, nil
+}
+
+// cloudifyVehicleState maps the hop-on family of states to their
+// cloud-facing equivalents. All other states pass through unchanged.
+func cloudifyVehicleState(raw string) string {
+	switch raw {
+	case "hop-on":
+		return "stand-by"
+	case "hop-on-learning":
+		return "parked"
+	default:
+		return raw
+	}
 }
 
 // CollectKeyState reads state for a single Redis key

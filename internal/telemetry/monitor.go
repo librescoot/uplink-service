@@ -40,7 +40,6 @@ var priorityNames = map[Priority]string{
 // Field-specific priority mappings
 var fieldPriorities = map[string]Priority{
 	"vehicle[state]":                 Immediate,
-	"vehicle[hop-on-active]":         Immediate,
 	"vehicle[seatbox:lock]":          Immediate,
 	"vehicle[handlebar:lock-sensor]": Immediate,
 	"vehicle[blinker:state]":         Immediate,
@@ -87,15 +86,6 @@ type Monitor struct {
 	priorityTimers    map[Priority]*time.Timer
 
 	lastValues map[string]string
-
-	// rawVehicleState tracks the most recent raw vehicle[state] value seen
-	// from Redis (i.e. what vehicle-service publishes — "parked" while
-	// hop-on is active, "stand-by" while standby, etc.). We keep this
-	// separate from lastValues["vehicle[state]"], which stores the value
-	// actually emitted to the cloud after the hop-on-active override is
-	// applied. Needed so a hop-on-active toggle can recompute and emit the
-	// correct state without a fresh raw state arriving.
-	rawVehicleState string
 }
 
 // FlushAllPending immediately flushes all pending changes across all priorities
@@ -175,24 +165,12 @@ func (m *Monitor) SetEventFlusher(ef EventFlusher) {
 	m.eventFlusher = ef
 }
 
-// InitializeBaseline sets the initial values from a state snapshot
+// InitializeBaseline sets the initial values from a state snapshot.
+// CollectState already applies cloudifyVehicleState to vehicle[state] in
+// the snapshot, so lastValues sees the cloud-facing value for free.
 func (m *Monitor) InitializeBaseline(state map[string]any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	// CollectState applies the hop-on-active override to vehicle[state]
-	// before returning, so lastValues will be seeded with what the cloud
-	// sees. But we need rawVehicleState to hold the underlying unmapped
-	// value for future override recomputation on flag toggles — so when
-	// hop-on is active at startup, skip seeding rawVehicleState from the
-	// snapshot (it would be "stand-by", not the raw state). The first
-	// HashWatcher event for vehicle[state] will populate it correctly.
-	hopOnActive := false
-	if vehicle, ok := state["vehicle"].(map[string]any); ok {
-		if active, _ := vehicle["hop-on-active"].(string); active == "true" {
-			hopOnActive = true
-		}
-	}
 
 	for hash, fields := range state {
 		if fieldMap, ok := fields.(map[string]any); ok {
@@ -200,9 +178,6 @@ func (m *Monitor) InitializeBaseline(state map[string]any) {
 				fullKey := hash + "[" + field + "]"
 				if strVal, ok := value.(string); ok {
 					m.lastValues[fullKey] = strVal
-					if hash == "vehicle" && field == "state" && !hopOnActive {
-						m.rawVehicleState = strVal
-					}
 				}
 			}
 		}
@@ -255,20 +230,13 @@ func (m *Monitor) handleFieldChange(hash, field, value string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Track the raw vehicle state separately from the emitted value so a
-	// hop-on-active toggle can recompute the override without a fresh
-	// state event. Must happen even if the raw value didn't change, so the
-	// cache stays consistent with what vehicle-service last published.
+	// Apply the hop-on cloud-facing remap before dedup so lastValues
+	// reflects what actually gets sent to the cloud.
 	if hash == "vehicle" && field == "state" {
-		m.rawVehicleState = value
-		// Apply the hop-on-active override before dedup so lastValues
-		// reflects what actually gets sent to the cloud.
-		if m.lastValues["vehicle[hop-on-active]"] == "true" {
-			value = "stand-by"
-		}
+		value = cloudifyVehicleState(value)
 	}
 
-	// Check if value actually changed (post-override for vehicle[state])
+	// Check if value actually changed (post-remap for vehicle[state])
 	if m.lastValues[fullKey] == value {
 		return nil
 	}
@@ -277,23 +245,6 @@ func (m *Monitor) handleFieldChange(hash, field, value string) error {
 	// Determine priority for this field
 	priority := m.getFieldPriority(hash, field)
 	m.enqueueChangeLocked(priority, hash, field, value)
-
-	// When the hop-on-active flag toggles, the effective vehicle[state]
-	// we should report may change without a fresh state event. Recompute
-	// and enqueue if so.
-	if hash == "vehicle" && field == "hop-on-active" && m.rawVehicleState != "" {
-		var effective string
-		if value == "true" {
-			effective = "stand-by"
-		} else {
-			effective = m.rawVehicleState
-		}
-		if m.lastValues["vehicle[state]"] != effective {
-			m.lastValues["vehicle[state]"] = effective
-			statePriority := m.getFieldPriority("vehicle", "state")
-			m.enqueueChangeLocked(statePriority, "vehicle", "state", effective)
-		}
-	}
 
 	return nil
 }
