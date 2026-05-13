@@ -1,5 +1,5 @@
 [Unit]
-Description=LibreScoot Uplink Service
+Description=Librescoot Uplink Service
 After=network-online.target librescoot-onboot.service
 Wants=network-online.target
 
