@@ -10,6 +10,8 @@ const (
 	MsgTypeAuth            MessageType = "auth"
 	MsgTypeState           MessageType = "state"
 	MsgTypeChange          MessageType = "change"
+	MsgTypeTelemetryDelta  MessageType = "telemetry_delta"
+	MsgTypeTelemetryBatch  MessageType = "telemetry_batch"
 	MsgTypeEvent           MessageType = "event"
 	MsgTypeKeepalive       MessageType = "keepalive"
 	MsgTypeCommandResponse MessageType = "command_response"
@@ -57,6 +59,37 @@ type ChangeMessage struct {
 	Type      MessageType            `json:"type"`
 	Changes   map[string]any `json:"changes"`
 	Timestamp string                 `json:"timestamp"`
+}
+
+// TelemetryDeltaMessage - Client sends changed leaves plus a list of removed
+// paths (dotted "hash.field" keys) so the server can prune deleted fields that
+// a merge alone can never remove.
+type TelemetryDeltaMessage struct {
+	Type      MessageType    `json:"type"`
+	Changes   map[string]any `json:"changes"`
+	Removed   []string       `json:"removed,omitempty"`
+	Timestamp string         `json:"timestamp"`
+}
+
+// TelemetrySnapshot is one timestamped full-state snapshot within a batch.
+type TelemetrySnapshot struct {
+	Data      map[string]any `json:"data"`
+	Timestamp string         `json:"timestamp"`
+}
+
+// TelemetryBatchMessage - Client replays buffered offline snapshots.
+type TelemetryBatchMessage struct {
+	Type      MessageType         `json:"type"`
+	Snapshots []TelemetrySnapshot `json:"snapshots"`
+	Timestamp string              `json:"timestamp"`
+}
+
+// ConfigUpdateMessage - Server pushes dotted-path config deltas to the client.
+type ConfigUpdateMessage struct {
+	Type      MessageType       `json:"type"`
+	Deltas    map[string]string `json:"deltas"`
+	Restart   bool              `json:"restart,omitempty"`
+	Timestamp string            `json:"timestamp"`
 }
 
 // EventMessage - Client sends critical event

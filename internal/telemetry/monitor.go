@@ -3,8 +3,7 @@ package telemetry
 import (
 	"context"
 	"log"
-	"sort"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -64,82 +63,62 @@ var hashPriorities = map[string]Priority{
 	"battery:1": Quick,
 }
 
+// noisyFields never trigger a flush on their own. Their current values are still
+// included whenever a snapshot or delta is sent (the publisher recollects fresh
+// state), but their constant churn must not drive traffic.
+var noisyFields = map[string]bool{
+	"gps[timestamp]":           true,
+	"gps[latitude]":            true,
+	"gps[longitude]":           true,
+	"gps[altitude]":            true,
+	"gps[course]":              true,
+	"internet[signal-quality]": true,
+}
+
+// quantizationBuckets defines, per fully-qualified field, the granularity at
+// which a change is considered significant enough to schedule a flush. Sensor
+// dither below the bucket size is ignored for triggering purposes.
+var quantizationBuckets = map[string]float64{
+	"battery:0[voltage]":       100,
+	"battery:1[voltage]":       100,
+	"battery:0[current]":       250,
+	"battery:1[current]":       250,
+	"engine-ecu[motor:voltage]": 50,
+	"engine-ecu[motor:current]": 100,
+	"aux-battery[voltage]":     50,
+	"cb-battery[cell-voltage]": 50,
+	"cb-battery[current]":      100,
+	"gps[speed]":               1,
+}
+
+// TelemetryFlusher recollects and publishes the current snapshot.
+type TelemetryFlusher interface {
+	Flush(ctx context.Context, forceFull bool) error
+}
+
 // EventFlusher interface for flushing buffered events
 type EventFlusher interface {
 	FlushBufferedEvents(ctx context.Context)
 }
 
-// Monitor watches Redis keys for changes and sends deltas
+// Monitor watches Redis keys for changes and decides when to trigger a
+// telemetry flush. It does not build the payload itself; the flusher recollects
+// a fresh snapshot and diffs it.
 type Monitor struct {
 	client       *ipc.Client
 	collector    *Collector
 	connMgr      *connection.Manager
+	flusher      TelemetryFlusher
 	eventFlusher EventFlusher
 	ctx          context.Context
 
 	mu       sync.Mutex
 	watchers []*ipc.HashWatcher
 
-	// Per-priority configuration and state
 	priorityDeadlines map[Priority]time.Duration
-	priorityPending   map[Priority]map[string]any // priority -> hash -> field -> value
-	priorityTimers    map[Priority]*time.Timer
+	priorityArmed     map[Priority]*time.Timer
 
 	lastValues map[string]string
-}
-
-// FlushAllPending immediately flushes all pending changes across all priorities
-func (m *Monitor) FlushAllPending() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if !m.connMgr.IsConnected() {
-		return
-	}
-
-	// Collect all pending changes
-	allPending := make(map[string]any)
-	var allChanges []string
-
-	for prio := Immediate; prio <= Slow; prio++ {
-		pending := m.priorityPending[prio]
-		if len(pending) == 0 {
-			continue
-		}
-
-		// Merge pending changes from this priority
-		for hash, fields := range pending {
-			if allPending[hash] == nil {
-				allPending[hash] = make(map[string]any)
-			}
-			if fieldMap, ok := fields.(map[string]any); ok {
-				for field, value := range fieldMap {
-					allPending[hash].(map[string]any)[field] = value
-					allChanges = append(allChanges, hash+"["+field+"]")
-				}
-			}
-		}
-
-		// Clear this priority's pending changes and timer
-		m.priorityPending[prio] = make(map[string]any)
-		if m.priorityTimers[prio] != nil {
-			m.priorityTimers[prio].Stop()
-			m.priorityTimers[prio] = nil
-		}
-	}
-
-	if len(allPending) == 0 {
-		return
-	}
-
-	// Sort for consistent logging
-	sort.Strings(allChanges)
-
-	log.Printf("[Monitor] Flush (manual): %v", allChanges)
-
-	if err := m.connMgr.SendChange(allPending); err != nil {
-		log.Printf("[Monitor] Failed to send changes: %v", err)
-	}
 }
 
 // NewMonitor creates a new state monitor
@@ -149,15 +128,14 @@ func NewMonitor(client *ipc.Client, collector *Collector, connMgr *connection.Ma
 		collector:         collector,
 		connMgr:           connMgr,
 		priorityDeadlines: priorityDeadlines,
-		priorityPending: map[Priority]map[string]any{
-			Immediate: make(map[string]any),
-			Quick:     make(map[string]any),
-			Medium:    make(map[string]any),
-			Slow:      make(map[string]any),
-		},
-		priorityTimers: make(map[Priority]*time.Timer),
-		lastValues:     make(map[string]string),
+		priorityArmed:     make(map[Priority]*time.Timer),
+		lastValues:        make(map[string]string),
 	}
+}
+
+// SetFlusher wires the telemetry flusher used when a deadline fires.
+func (m *Monitor) SetFlusher(f TelemetryFlusher) {
+	m.flusher = f
 }
 
 // SetEventFlusher sets the event flusher for bidirectional flushing
@@ -165,21 +143,24 @@ func (m *Monitor) SetEventFlusher(ef EventFlusher) {
 	m.eventFlusher = ef
 }
 
-// InitializeBaseline sets the initial values from a state snapshot.
-// CollectState already applies cloudifyVehicleState to vehicle[state] in
-// the snapshot, so lastValues sees the cloud-facing value for free.
+// InitializeBaseline seeds the change-detection values from a snapshot, applying
+// quantization so the first sub-bucket change does not trigger a spurious flush.
 func (m *Monitor) InitializeBaseline(state map[string]any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for hash, fields := range state {
-		if fieldMap, ok := fields.(map[string]any); ok {
-			for field, value := range fieldMap {
-				fullKey := hash + "[" + field + "]"
-				if strVal, ok := value.(string); ok {
-					m.lastValues[fullKey] = strVal
-				}
+		fieldMap, ok := fields.(map[string]any)
+		if !ok {
+			continue
+		}
+		for field, value := range fieldMap {
+			strVal, ok := value.(string)
+			if !ok {
+				continue
 			}
+			fullKey := hash + "[" + field + "]"
+			m.lastValues[fullKey] = quantize(fullKey, strVal)
 		}
 	}
 	log.Printf("[Monitor] Initialized baseline with %d field values", len(m.lastValues))
@@ -190,18 +171,17 @@ func (m *Monitor) Start(ctx context.Context) {
 	m.ctx = ctx
 	log.Println("[Monitor] Starting Redis PUBSUB monitoring with HashWatchers...")
 
-	// Create HashWatcher for each monitored key
 	channels := []string{
 		"vehicle", "battery:0", "battery:1", "aux-battery", "cb-battery",
-		"engine-ecu", "gps", "internet", "modem", "power-manager",
-		"keycard", "ble", "ota", "alarm",
+		"engine-ecu", "gps", "internet", "modem", "power-manager", "power-mux",
+		"keycard", "ble", "ota", "alarm", "dashboard", "system",
 	}
 
 	for _, channel := range channels {
-		watcher := m.client.NewHashWatcher(channel)
-		// No debounce at HashWatcher level - Monitor handles priority-based deadlines
+		ch := channel
+		watcher := m.client.NewHashWatcher(ch)
 		watcher.OnAny(func(field, value string) error {
-			return m.handleFieldChange(channel, field, value)
+			return m.handleFieldChange(ch, field, value)
 		})
 		watcher.Start()
 		m.watchers = append(m.watchers, watcher)
@@ -209,165 +189,125 @@ func (m *Monitor) Start(ctx context.Context) {
 
 	log.Printf("[Monitor] Started %d HashWatchers", len(m.watchers))
 
-	// Block until context is done
 	<-ctx.Done()
 
-	// Stop all watchers
 	for _, watcher := range m.watchers {
 		watcher.Stop()
 	}
 }
 
-// handleFieldChange processes a field change from HashWatcher
+// handleFieldChange decides whether a field change should schedule a flush.
 func (m *Monitor) handleFieldChange(hash, field, value string) error {
 	fullKey := hash + "[" + field + "]"
 
-	// Filter out noisy fields
-	if !m.shouldNotifyKey(fullKey) {
+	if noisyFields[fullKey] {
 		return nil
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Apply the hop-on cloud-facing remap before dedup so lastValues
-	// reflects what actually gets sent to the cloud.
+	// Apply the hop-on cloud-facing remap before dedup so lastValues reflects
+	// the cloud-facing value.
 	if hash == "vehicle" && field == "state" {
 		value = cloudifyVehicleState(value)
 	}
 
-	// Check if value actually changed (post-remap for vehicle[state])
-	if m.lastValues[fullKey] == value {
+	q := quantize(fullKey, value)
+	if m.lastValues[fullKey] == q {
 		return nil
 	}
-	m.lastValues[fullKey] = value
+	m.lastValues[fullKey] = q
 
-	// Determine priority for this field
-	priority := m.getFieldPriority(hash, field)
-	m.enqueueChangeLocked(priority, hash, field, value)
-
+	m.armLocked(m.priorityFor(hash, field))
 	return nil
 }
 
-// enqueueChangeLocked adds a field change to the pending map for the given
-// priority and arms its deadline timer if necessary. Caller must hold m.mu.
-func (m *Monitor) enqueueChangeLocked(priority Priority, hash, field, value string) {
-	pending := m.priorityPending[priority]
-	if pending[hash] == nil {
-		pending[hash] = make(map[string]any)
+// armLocked starts a priority's deadline timer if not already running. Deadline
+// semantics: the timer is not reset by subsequent changes. Caller holds m.mu.
+func (m *Monitor) armLocked(priority Priority) {
+	if m.priorityArmed[priority] != nil {
+		return
 	}
-	pending[hash].(map[string]any)[field] = value
-
-	// Start deadline timer if not already running (deadline semantics - no reset!)
-	if m.priorityTimers[priority] == nil {
-		deadline := m.priorityDeadlines[priority]
-		m.priorityTimers[priority] = time.AfterFunc(deadline, func() {
-			m.flushPriority(priority)
-		})
-	}
+	deadline := m.priorityDeadlines[priority]
+	m.priorityArmed[priority] = time.AfterFunc(deadline, func() {
+		m.onDeadline(priority)
+	})
 }
 
-// shouldNotifyKey returns whether we should send change notifications for this key
-func (m *Monitor) shouldNotifyKey(fullKey string) bool {
-	// Filter out noisy/transient fields
-	if fullKey == "gps[timestamp]" {
-		return false
-	}
-
-	// For batteries, only notify on charge/state/present
-	if strings.HasPrefix(fullKey, "battery:0[") || strings.HasPrefix(fullKey, "battery:1[") {
-		field := fullKey[10 : len(fullKey)-1]
-		return field == "charge" || field == "state" || field == "present"
-	}
-
-	// For engine-ecu, only notify on speed/state
-	if len(fullKey) >= 12 && fullKey[:11] == "engine-ecu[" {
-		field := fullKey[11 : len(fullKey)-1]
-		return field == "speed" || field == "state"
-	}
-
-	// All other fields are worth notifying
-	return true
-}
-
-// getFieldPriority determines the flush priority for a field
-func (m *Monitor) getFieldPriority(hash, field string) Priority {
-	fullKey := hash + "[" + field + "]"
-
-	// Check exact field match
-	if prio, ok := fieldPriorities[fullKey]; ok {
-		return prio
-	}
-
-	// Check hash-level priority
-	if prio, ok := hashPriorities[hash]; ok {
-		return prio
-	}
-
-	// Default priority
-	return Medium
-}
-
-// flushPriority sends ALL pending changes (not just the triggering priority)
-func (m *Monitor) flushPriority(priority Priority) {
+// onDeadline fires when a priority's timer elapses: cancel all armed timers and
+// trigger a single flush covering every pending change.
+func (m *Monitor) onDeadline(priority Priority) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.clearTimersLocked()
+	connected := m.connMgr.IsConnected()
+	m.mu.Unlock()
 
-	// Clear the timer reference for triggering priority (it has already fired)
-	m.priorityTimers[priority] = nil
-
-	// If not connected, leave pending data intact — it will be flushed on reconnect
-	if !m.connMgr.IsConnected() {
+	if !connected {
+		// Rearm nothing; a reconnect triggers a full flush from main.
 		return
 	}
 
-	// Flush ALL priorities that have pending changes
-	allPending := make(map[string]any)
-	var allChanges []string
+	log.Printf("[Monitor] Flush (triggered by %s)", priorityNames[priority])
+	m.doFlush()
+}
 
-	for prio := Immediate; prio <= Slow; prio++ {
-		pending := m.priorityPending[prio]
-		if len(pending) == 0 {
-			continue
-		}
+// FlushAllPending triggers an immediate flush (used on reconnect).
+func (m *Monitor) FlushAllPending() {
+	m.mu.Lock()
+	m.clearTimersLocked()
+	connected := m.connMgr.IsConnected()
+	m.mu.Unlock()
 
-		// Merge pending changes from this priority
-		for hash, fields := range pending {
-			if allPending[hash] == nil {
-				allPending[hash] = make(map[string]any)
-			}
-			if fieldMap, ok := fields.(map[string]any); ok {
-				for field, value := range fieldMap {
-					allPending[hash].(map[string]any)[field] = value
-					allChanges = append(allChanges, hash+"["+field+"]")
-				}
-			}
-		}
-
-		// Clear this priority's pending changes
-		m.priorityPending[prio] = make(map[string]any)
-		// Clear timer if running (triggered by another priority)
-		if m.priorityTimers[prio] != nil {
-			m.priorityTimers[prio].Stop()
-			m.priorityTimers[prio] = nil
-		}
-	}
-
-	if len(allPending) == 0 {
+	if !connected {
 		return
 	}
+	m.doFlush()
+}
 
-	// Sort for consistent logging
-	sort.Strings(allChanges)
-
-	log.Printf("[Monitor] Flush (triggered by %s): %v", priorityNames[priority], allChanges)
-
-	if err := m.connMgr.SendChange(allPending); err != nil {
-		log.Printf("[Monitor] Failed to send changes: %v", err)
+func (m *Monitor) doFlush() {
+	if m.flusher != nil {
+		if err := m.flusher.Flush(m.ctx, false); err != nil {
+			log.Printf("[Monitor] Flush failed: %v", err)
+		}
 	}
-
-	// Also flush buffered events since we're sending anyway
 	if m.eventFlusher != nil {
 		go m.eventFlusher.FlushBufferedEvents(m.ctx)
 	}
+}
+
+func (m *Monitor) clearTimersLocked() {
+	for prio, timer := range m.priorityArmed {
+		if timer != nil {
+			timer.Stop()
+		}
+		delete(m.priorityArmed, prio)
+	}
+}
+
+// priorityFor determines the flush priority for a field.
+func (m *Monitor) priorityFor(hash, field string) Priority {
+	fullKey := hash + "[" + field + "]"
+	if prio, ok := fieldPriorities[fullKey]; ok {
+		return prio
+	}
+	if prio, ok := hashPriorities[hash]; ok {
+		return prio
+	}
+	return Medium
+}
+
+// quantize returns a canonical dedup key for a field value: analog fields are
+// snapped to their bucket, everything else passes through unchanged.
+func quantize(fullKey, value string) string {
+	bucket, ok := quantizationBuckets[fullKey]
+	if !ok || bucket == 0 {
+		return value
+	}
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return value
+	}
+	snapped := float64(int64(f/bucket+0.5)) * bucket
+	return strconv.FormatFloat(snapped, 'f', -1, 64)
 }

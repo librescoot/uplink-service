@@ -47,6 +47,7 @@ type Manager struct {
 	sendChan     chan []byte
 	receiveChan  chan []byte
 	cmdChan      chan *protocol.CommandMessage
+	configChan   chan *protocol.ConfigUpdateMessage
 	connectedCh  chan struct{}
 	done         chan struct{}
 
@@ -64,6 +65,7 @@ func NewManager(cfg *config.Config, version string) *Manager {
 		sendChan:    make(chan []byte, 256),
 		receiveChan: make(chan []byte, 256),
 		cmdChan:     make(chan *protocol.CommandMessage, 256),
+		configChan:  make(chan *protocol.ConfigUpdateMessage, 16),
 		connectedCh: make(chan struct{}, 1),
 		done:        make(chan struct{}),
 	}
@@ -281,6 +283,22 @@ func (m *Manager) readLoop(readDone chan struct{}, stopSignal <-chan struct{}) {
 				return
 			}
 
+		case protocol.MsgTypeConfigUpdate:
+			var cfgMsg protocol.ConfigUpdateMessage
+			if err := json.Unmarshal(message, &cfgMsg); err != nil {
+				log.Printf("[ConnectionManager] Failed to parse config update: %v", err)
+				continue
+			}
+			log.Printf("[ConnectionManager] Received config update (%d deltas, restart=%t)", len(cfgMsg.Deltas), cfgMsg.Restart)
+
+			select {
+			case m.configChan <- &cfgMsg:
+			case <-stopSignal:
+				return
+			default:
+				log.Println("[ConnectionManager] Config update channel full, dropping update")
+			}
+
 		default:
 			log.Printf("[ConnectionManager] Unknown message type: %s", baseMsg.Type)
 		}
@@ -414,6 +432,60 @@ func (m *Manager) SendChange(changes map[string]any) error {
 	}
 }
 
+// SendTelemetryDelta sends changed leaves plus a list of removed paths.
+func (m *Manager) SendTelemetryDelta(changes map[string]any, removed []string) error {
+	if !m.IsConnected() {
+		return fmt.Errorf("not connected")
+	}
+
+	msg := protocol.TelemetryDeltaMessage{
+		Type:      protocol.MsgTypeTelemetryDelta,
+		Changes:   changes,
+		Removed:   removed,
+		Timestamp: protocol.Timestamp(),
+	}
+
+	msgData, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal telemetry delta failed: %w", err)
+	}
+
+	select {
+	case m.sendChan <- msgData:
+		m.incrementTelemetrySent()
+		return nil
+	default:
+		return fmt.Errorf("send channel full")
+	}
+}
+
+// SendTelemetryBatch replays a batch of buffered offline snapshots.
+func (m *Manager) SendTelemetryBatch(snapshots []protocol.TelemetrySnapshot) error {
+	if !m.IsConnected() {
+		return fmt.Errorf("not connected")
+	}
+
+	msg := protocol.TelemetryBatchMessage{
+		Type:      protocol.MsgTypeTelemetryBatch,
+		Snapshots: snapshots,
+		Timestamp: protocol.Timestamp(),
+	}
+
+	msgData, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal telemetry batch failed: %w", err)
+	}
+
+	select {
+	case m.sendChan <- msgData:
+		m.incrementTelemetrySent()
+		log.Printf("[ConnectionManager] Sent telemetry batch (%d snapshots)", len(snapshots))
+		return nil
+	default:
+		return fmt.Errorf("send channel full")
+	}
+}
+
 // SendEvent sends critical event
 func (m *Manager) SendEvent(eventType string, data map[string]any) error {
 	if !m.IsConnected() {
@@ -466,6 +538,23 @@ func (m *Manager) SendCommandResponse(resp *protocol.CommandResponse) error {
 // CommandChannel returns the channel for receiving commands
 func (m *Manager) CommandChannel() <-chan *protocol.CommandMessage {
 	return m.cmdChan
+}
+
+// ConfigUpdateChannel returns the channel for server-pushed config updates.
+func (m *Manager) ConfigUpdateChannel() <-chan *protocol.ConfigUpdateMessage {
+	return m.configChan
+}
+
+// RequestReconnect drops the current connection so the connection loop redials.
+// Used after a config change that affects how or where we connect.
+func (m *Manager) RequestReconnect() {
+	m.mu.RLock()
+	conn := m.conn
+	m.mu.RUnlock()
+	if conn != nil {
+		log.Println("[ConnectionManager] Reconnect requested, closing connection")
+		conn.Close()
+	}
 }
 
 // IsConnected returns whether the connection is active

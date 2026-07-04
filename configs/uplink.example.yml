@@ -6,9 +6,71 @@ uplink:
 scooter:
   identifier: "YOUR_SCOOTER_VIN_HERE"
   token: "YOUR_AUTH_TOKEN_HERE"
+  name: ""                       # optional friendly name
+
+# production | development. Development unlocks otherwise-restricted commands
+# (e.g. shell).
+environment: "production"
+
+# systemd unit name for the restart command; auto-detected when empty.
+service_name: ""
+
+# Time synchronisation. The clock is trusted only after a successful NTP sync;
+# until then telemetry timestamps are monotonic-relative and reprojected later.
+ntp:
+  enabled: true
+  server: "pool.ntp.org"
 
 telemetry:
   event_buffer_path: "/data/uplink-service/events.queue"
   event_max_retries: 10
+  transmit_period: "5m"          # how often the offline buffer drains
+  buffer:
+    enabled: true
+    max_size: 1000               # snapshots kept before subsampling
+    max_retries: 5
+    retry_interval: "1m"
+    persist_path: "/data/uplink-service/telemetry-buffer.json"
+  intervals:                     # liveness cadence per vehicle state
+    driving: "30s"
+    standby: "5m"
+    standby_no_battery: "8h"
+    hibernate: "24h"
+
+# Per-command overrides. Disable a command or supply default params.
+commands:
+  redis:
+    disabled: true               # debug command; off by default
+  locate:
+    params:
+      honk_time: 40
+      honk_interval: 80
+      interval: 4000
+  alarm:
+    params:
+      on_time: 400
+      off_time: 400
+
+# Unauthorized-movement detection and notification channels (parsed now; the
+# detector/channels themselves are a later phase).
+events:
+  movement:
+    enabled: true
+    arm_threshold_m: 20
+    confirm_threshold_m: 30
+    sample_count: 12
+    sample_interval: "5s"
+    cooldown: "2m"
+    implausible_jump_m: 5000
+
+notifications:
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+  sms:
+    enabled: false
+    phone_number: ""
+  rules: []
 
 redis_url: "localhost:6379"

@@ -17,7 +17,9 @@ import (
 	"github.com/librescoot/uplink-service/internal/commands"
 	"github.com/librescoot/uplink-service/internal/config"
 	"github.com/librescoot/uplink-service/internal/connection"
+	"github.com/librescoot/uplink-service/internal/modeminfo"
 	"github.com/librescoot/uplink-service/internal/telemetry"
+	"github.com/librescoot/uplink-service/internal/timeutil"
 )
 
 var version = "dev" // Set via ldflags at build time
@@ -92,13 +94,35 @@ func main() {
 	// Report disconnected at startup before the first connection attempt
 	writeCloudStatus(false)
 
+	// Clock: anchored to a monotonic reference; invalid until NTP succeeds.
+	// A plausible-looking wall-clock year is NOT trusted (the RTC is seeded
+	// with the firmware build time at first boot).
+	clock := timeutil.NewClock()
+	startClockSync(ctx, cfg, clock)
+
+	// Modem identity poller (background; degrades gracefully off-target).
+	modem := modeminfo.NewPoller(0)
+	go modem.Start(ctx)
+
 	// Initialize components
 	connMgr := connection.NewManager(cfg, version)
-	connMgr.StatusCallback = writeCloudStatus
-	collector := telemetry.NewCollector(client)
+	collector := telemetry.NewCollector(client, version, cfg, modem)
 	monitor := telemetry.NewMonitor(client, collector, connMgr)
 	eventDetector := telemetry.NewEventDetector(client, connMgr, monitor, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
-	cmdHandler := commands.NewHandler(connMgr, client, collector)
+	cmdHandler := commands.NewHandler(connMgr, client, collector, cfg)
+
+	// Telemetry buffer (offline persistence) and publisher (delta engine).
+	buffer := telemetry.NewBuffer(client, connMgr, clock, cfg.Telemetry.Buffer, cfg.Telemetry.GetTransmitPeriod())
+	publisher := telemetry.NewPublisher(collector, connMgr, clock, buffer)
+	monitor.SetFlusher(publisher)
+
+	// On disconnect, force the next send to be a full resync.
+	connMgr.StatusCallback = func(connected bool) {
+		writeCloudStatus(connected)
+		if !connected {
+			publisher.ResetBaseline()
+		}
+	}
 
 	// Wire up bidirectional flushing: monitor <-> eventDetector
 	monitor.SetEventFlusher(eventDetector)
@@ -108,7 +132,7 @@ func main() {
 		log.Fatalf("Failed to start connection manager: %v", err)
 	}
 
-	// Handle connection events - send full state on every connect/reconnect
+	// Handle connection events - full resync on every connect/reconnect
 	go func() {
 		firstConnection := true
 		for {
@@ -125,34 +149,34 @@ func main() {
 					log.Println("[Main] Reconnected")
 				}
 
-				// Collect state snapshot
-				log.Println("[Main] Collecting state snapshot...")
-				state, err := collector.CollectState(ctx)
-				if err != nil {
-					log.Printf("[Main] Failed to collect state: %v", err)
-					continue
-				}
-
 				// Initialize baselines on first connection only
 				if firstConnection {
+					state, err := collector.CollectState(ctx)
+					if err != nil {
+						log.Printf("[Main] Failed to collect state: %v", err)
+						continue
+					}
 					monitor.InitializeBaseline(state)
 					eventDetector.InitializeBaseline(state)
 					firstConnection = false
+					go buffer.StartDrainLoop(ctx)
 				}
 
-				// Send state snapshot on every connection
-				log.Println("[Main] Sending state snapshot...")
-				if err := connMgr.SendState(state); err != nil {
-					log.Printf("[Main] Failed to send state: %v", err)
+				// Send a forced full snapshot via the publisher.
+				log.Println("[Main] Sending full telemetry snapshot...")
+				if err := publisher.Flush(ctx, true); err != nil {
+					log.Printf("[Main] Failed to publish snapshot: %v", err)
 				}
 
-				// Flush any buffered events and pending telemetry on every connection
-				log.Println("[Main] Flushing buffered events...")
+				// Replay buffered events and offline telemetry.
 				go eventDetector.FlushBufferedEvents(ctx)
-				go monitor.FlushAllPending()
+				go buffer.Flush()
 			}
 		}
 	}()
+
+	// Liveness: publish on a state-based interval even with no field changes.
+	go intervalTicker(ctx, cfg, client, connMgr, publisher)
 
 	cmdHandler.Start(ctx)
 
@@ -171,6 +195,67 @@ func main() {
 	// Give goroutines time to clean up
 	time.Sleep(1 * time.Second)
 	log.Println("Stopped.")
+}
+
+// startClockSync attempts an immediate NTP sync and, on failure, keeps retrying
+// in the background. Clock validity is established only by a successful NTP
+// query — never by a plausible-looking wall-clock value.
+func startClockSync(ctx context.Context, cfg *config.Config, clock *timeutil.Clock) {
+	if !cfg.NTP.IsEnabled() {
+		log.Println("[Clock] NTP disabled; timestamps remain monotonic-relative until valid")
+		return
+	}
+	server := cfg.NTP.Server
+	if _, err := clock.SyncOnce(server); err == nil {
+		log.Println("[Clock] Time synchronized via NTP")
+		return
+	}
+	go func() {
+		backoff := 10 * time.Second
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+				if _, err := clock.SyncOnce(server); err == nil {
+					log.Println("[Clock] Time synchronized via NTP (background)")
+					return
+				}
+				if backoff < 5*time.Minute {
+					backoff *= 2
+				}
+			}
+		}
+	}()
+}
+
+// intervalTicker publishes a fresh snapshot on a state-based cadence so the
+// server sees liveness even when no monitored field changes.
+func intervalTicker(ctx context.Context, cfg *config.Config, client *ipc.Client, connMgr *connection.Manager, publisher *telemetry.Publisher) {
+	for {
+		interval := telemetryInterval(cfg, client)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+			if connMgr.IsConnected() {
+				if err := publisher.Flush(ctx, false); err != nil {
+					log.Printf("[Main] Interval flush failed: %v", err)
+				}
+			}
+		}
+	}
+}
+
+// telemetryInterval selects the reporting interval for the current vehicle
+// state and main-battery presence.
+func telemetryInterval(cfg *config.Config, client *ipc.Client) time.Duration {
+	state, _ := client.HGet("vehicle", "state")
+	present := false
+	if p, err := client.HGet("battery:0", "present"); err == nil && p == "true" {
+		present = true
+	}
+	return cfg.Telemetry.Intervals.Interval(state, present)
 }
 
 // statsLogger prints connection statistics periodically
