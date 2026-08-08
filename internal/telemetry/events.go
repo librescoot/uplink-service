@@ -74,7 +74,9 @@ func (e *EventDetector) Start(ctx context.Context) {
 		w.OnField("charge", e.makeBatteryChargeHandler(battery))
 		w.OnField("present", e.makeBatteryPresentHandler(battery))
 		w.OnField("temperature", e.makeTemperatureHandler(battery, "temperature"))
-		w.Start()
+		if err := w.Start(); err != nil {
+			log.Printf("[EventDetector] Failed to start watcher for %s: %v", battery, err)
+		}
 		e.watchers = append(e.watchers, w)
 	}
 
@@ -82,51 +84,67 @@ func (e *EventDetector) Start(ctx context.Context) {
 	pmWatcher := e.client.NewHashWatcher("power-manager")
 	pmWatcher.OnField("state", e.handlePowerState)
 	pmWatcher.OnField("nrf-reset-reason", e.handleNrfReset)
-	pmWatcher.Start()
+	if err := pmWatcher.Start(); err != nil {
+		log.Printf("[EventDetector] Failed to start power manager watcher: %v", err)
+	}
 	e.watchers = append(e.watchers, pmWatcher)
 
 	// Internet watcher
 	internetWatcher := e.client.NewHashWatcher("internet")
 	internetWatcher.OnField("status", e.handleConnectivityStatus)
-	internetWatcher.Start()
+	if err := internetWatcher.Start(); err != nil {
+		log.Printf("[EventDetector] Failed to start internet watcher: %v", err)
+	}
 	e.watchers = append(e.watchers, internetWatcher)
 
 	// Vehicle watcher
 	vehicleWatcher := e.client.NewHashWatcher("vehicle")
 	vehicleWatcher.OnField("handlebar:lock-sensor", e.makeHandlebarLockHandler())
 	vehicleWatcher.OnField("seatbox:lock", e.makeSeatboxLockHandler())
-	vehicleWatcher.Start()
+	if err := vehicleWatcher.Start(); err != nil {
+		log.Printf("[EventDetector] Failed to start vehicle watcher: %v", err)
+	}
 	e.watchers = append(e.watchers, vehicleWatcher)
 
 	// GPS watcher
 	gpsWatcher := e.client.NewHashWatcher("gps")
 	gpsWatcher.OnField("state", e.handleGPSState)
-	gpsWatcher.Start()
+	if err := gpsWatcher.Start(); err != nil {
+		log.Printf("[EventDetector] Failed to start GPS watcher: %v", err)
+	}
 	e.watchers = append(e.watchers, gpsWatcher)
 
 	// Engine ECU watcher
 	ecuWatcher := e.client.NewHashWatcher("engine-ecu")
 	ecuWatcher.OnField("temperature", e.makeTemperatureHandler("engine-ecu", "temperature"))
-	ecuWatcher.Start()
+	if err := ecuWatcher.Start(); err != nil {
+		log.Printf("[EventDetector] Failed to start engine ECU watcher: %v", err)
+	}
 	e.watchers = append(e.watchers, ecuWatcher)
 
 	// CB Battery watcher - monitor control board battery
 	cbBatteryWatcher := e.client.NewHashWatcher("cb-battery")
 	cbBatteryWatcher.OnField("charge", e.makeCBBatteryChargeHandler())
-	cbBatteryWatcher.Start()
+	if err := cbBatteryWatcher.Start(); err != nil {
+		log.Printf("[EventDetector] Failed to start CB battery watcher: %v", err)
+	}
 	e.watchers = append(e.watchers, cbBatteryWatcher)
 
 	// OTA status watcher
 	otaWatcher := e.client.NewHashWatcher("ota")
 	otaWatcher.OnField("status", e.handleOTAStatus)
-	otaWatcher.Start()
+	if err := otaWatcher.Start(); err != nil {
+		log.Printf("[EventDetector] Failed to start OTA watcher: %v", err)
+	}
 	e.watchers = append(e.watchers, otaWatcher)
 
 	// Alarm watcher
 	alarmWatcher := e.client.NewHashWatcher("alarm")
 	alarmWatcher.OnField("alarm-active", e.handleAlarmActive)
 	alarmWatcher.OnField("status", e.handleAlarmStatus)
-	alarmWatcher.Start()
+	if err := alarmWatcher.Start(); err != nil {
+		log.Printf("[EventDetector] Failed to start alarm watcher: %v", err)
+	}
 	e.watchers = append(e.watchers, alarmWatcher)
 
 	log.Printf("[EventDetector] Started %d HashWatchers", len(e.watchers))
@@ -134,7 +152,9 @@ func (e *EventDetector) Start(ctx context.Context) {
 	// Fault stream consumer - monitor fault events
 	e.faultConsumer = e.client.NewStreamConsumer("events:faults")
 	e.faultConsumer.Handle(e.handleFault)
-	e.faultConsumer.Start("$") // Start from new messages only
+	if err := e.faultConsumer.Start("$"); err != nil { // Start from new messages only
+		log.Printf("[EventDetector] Failed to start fault stream consumer: %v", err)
+	}
 	log.Println("[EventDetector] Started fault stream consumer")
 
 	// Block until context is done
@@ -145,9 +165,10 @@ func (e *EventDetector) Start(ctx context.Context) {
 		e.faultConsumer.Stop()
 	}
 
-	// Stop all watchers
+	// Stop all watchers. The process is shutting down, so a failed
+	// unsubscribe has nothing left to report to.
 	for _, watcher := range e.watchers {
-		watcher.Stop()
+		_ = watcher.Stop()
 	}
 }
 
@@ -597,13 +618,21 @@ func (e *EventDetector) flushBufferedEvents(ctx context.Context) {
 
 		for _, event := range failedEvents {
 			data, _ := json.Marshal(event)
-			f.Write(data)
-			f.Write([]byte("\n"))
+			if _, err := f.Write(data); err != nil {
+				log.Printf("[EventDetector] Failed to write event to buffer: %v", err)
+				break
+			}
+			if _, err := f.Write([]byte("\n")); err != nil {
+				log.Printf("[EventDetector] Failed to write newline to buffer: %v", err)
+				break
+			}
 		}
 		log.Printf("[EventDetector] Rewrote buffer with %d failed events", len(failedEvents))
 	} else {
 		// All sent successfully, remove buffer
-		os.Remove(e.bufferPath)
+		if err := os.Remove(e.bufferPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[EventDetector] Failed to remove buffer file: %v", err)
+		}
 	}
 }
 

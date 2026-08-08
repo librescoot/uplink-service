@@ -119,7 +119,9 @@ func (m *Manager) connect(ctx context.Context) error {
 		return fmt.Errorf("dial failed: %w", err)
 	}
 	defer func() {
-		conn.Close()
+		// The connection is being torn down regardless of outcome; a failed
+		// close here has no recovery action to take.
+		_ = conn.Close()
 		m.mu.Lock()
 		m.conn = nil
 		m.mu.Unlock()
@@ -553,7 +555,7 @@ func (m *Manager) RequestReconnect() {
 	m.mu.RUnlock()
 	if conn != nil {
 		log.Println("[ConnectionManager] Reconnect requested, closing connection")
-		conn.Close()
+		_ = conn.Close()
 	}
 }
 

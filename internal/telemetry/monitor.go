@@ -183,7 +183,9 @@ func (m *Monitor) Start(ctx context.Context) {
 		watcher.OnAny(func(field, value string) error {
 			return m.handleFieldChange(ch, field, value)
 		})
-		watcher.Start()
+		if err := watcher.Start(); err != nil {
+			log.Printf("[Monitor] Failed to start watcher for %s: %v", ch, err)
+		}
 		m.watchers = append(m.watchers, watcher)
 	}
 
@@ -191,8 +193,10 @@ func (m *Monitor) Start(ctx context.Context) {
 
 	<-ctx.Done()
 
+	// The process is shutting down, so a failed unsubscribe has nothing
+	// left to report to.
 	for _, watcher := range m.watchers {
-		watcher.Stop()
+		_ = watcher.Stop()
 	}
 }
 

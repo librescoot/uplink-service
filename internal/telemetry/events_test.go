@@ -104,13 +104,17 @@ func TestBatteryPresentStatePersists(t *testing.T) {
 	presentHandler := detector.makeBatteryPresentHandler("battery:0")
 
 	// Set battery as present
-	presentHandler("true")
+	if err := presentHandler("true"); err != nil {
+		t.Fatalf("presentHandler(true) returned error: %v", err)
+	}
 	if detector.lastState["battery:0:present"] != "true" {
 		t.Error("Present state not persisted")
 	}
 
 	// Change to not present
-	presentHandler("false")
+	if err := presentHandler("false"); err != nil {
+		t.Fatalf("presentHandler(false) returned error: %v", err)
+	}
 	if detector.lastState["battery:0:present"] != "false" {
 		t.Error("Present state change not persisted")
 	}
