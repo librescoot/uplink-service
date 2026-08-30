@@ -24,7 +24,7 @@ The service uses `redis_url` (default `localhost:6379`) and collects state from 
 ```text
 vehicle, battery:0, battery:1, aux-battery, cb-battery, engine-ecu,
 power-manager, power-mux, internet, modem, gps, keycard, ble, dashboard,
-system, ota, alarm, navigation, scooter
+system, version:mdb, version:dbc, ota, alarm, navigation, scooter
 ```
 
 It watches a subset for telemetry changes and event detection. On startup and connection it writes `internet.unu-cloud=disconnected` or `connected` to show WebSocket authentication status. The collector adds `meta.build-version`, `meta.environment`, and `meta.identifier`; it also adds an MDB board serial and modem fields when available. Vehicle states `hop-on` and `hop-on-learning` are translated to `stand-by` and `parked` respectively in cloud telemetry.

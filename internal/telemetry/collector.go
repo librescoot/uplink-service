@@ -13,8 +13,8 @@ import (
 var collectedHashes = []string{
 	"vehicle", "battery:0", "battery:1", "aux-battery", "cb-battery",
 	"engine-ecu", "power-manager", "power-mux", "internet", "modem", "gps",
-	"keycard", "ble", "dashboard", "system", "ota", "alarm", "navigation",
-	"scooter",
+	"keycard", "ble", "dashboard", "system", "version:mdb", "version:dbc",
+	"ota", "alarm", "navigation", "scooter",
 }
 
 type Collector struct {
