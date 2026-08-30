@@ -14,12 +14,10 @@ import (
 	"github.com/librescoot/uplink-service/internal/protocol"
 )
 
-// StateCollector interface for collecting telemetry state
 type StateCollector interface {
 	CollectState(ctx context.Context) (map[string]any, error)
 }
 
-// Handler receives and executes commands from the server
 type Handler struct {
 	connMgr   *connection.Manager
 	client    *ipc.Client
@@ -27,15 +25,11 @@ type Handler struct {
 	cfg       *config.Config
 	ctx       context.Context
 
-	// alarmCancel stops an in-progress active-alarm pulse loop, if any.
-	// alarmGen identifies the current alarm so a finished goroutine does not
-	// clear a newer one.
 	alarmMu     sync.Mutex
 	alarmCancel context.CancelFunc
 	alarmGen    int
 }
 
-// NewHandler creates a new command handler
 func NewHandler(connMgr *connection.Manager, client *ipc.Client, collector StateCollector, cfg *config.Config) *Handler {
 	return &Handler{
 		connMgr:   connMgr,
@@ -45,7 +39,6 @@ func NewHandler(connMgr *connection.Manager, client *ipc.Client, collector State
 	}
 }
 
-// Start begins handling commands
 func (h *Handler) Start(ctx context.Context) {
 	h.ctx = ctx
 	log.Println("[CommandHandler] Starting...")
@@ -53,7 +46,6 @@ func (h *Handler) Start(ctx context.Context) {
 	go h.handleConfigUpdates()
 }
 
-// handleLoop processes commands from the command channel
 func (h *Handler) handleLoop() {
 	for {
 		select {
@@ -65,7 +57,6 @@ func (h *Handler) handleLoop() {
 	}
 }
 
-// handleConfigUpdates applies server-pushed config deltas.
 func (h *Handler) handleConfigUpdates() {
 	for {
 		select {
@@ -90,16 +81,16 @@ func (h *Handler) applyConfigUpdate(upd *protocol.ConfigUpdateMessage) {
 	}
 }
 
-// executeCommand gates, dispatches, and responds to a single command.
+// executeCommand enforces the remote-command allowlist before dispatching to
+// vehicle queues; shell remains development-only even when remotely requested.
 func (h *Handler) executeCommand(cmd *protocol.CommandMessage) {
 	log.Printf("[CommandHandler] Executing: %s (req_id=%s)", cmd.Command, cmd.RequestID)
 
-	// Gating: ping/get_state are always allowed; everything else honors the
-	// per-command disable flag, and shell is development-only.
 	if cmd.Command != "ping" && cmd.Command != "get_state" && h.cfg.CommandDisabled(cmd.Command) {
 		h.sendResponse(cmd.RequestID, cmd.Command, nil, fmt.Errorf("command disabled in config"))
 		return
 	}
+	// Never expose remote shell access outside development.
 	if cmd.Command == "shell" && !h.cfg.IsDevelopment() {
 		h.sendResponse(cmd.RequestID, cmd.Command, nil, fmt.Errorf("command not allowed in this environment"))
 		return
@@ -109,10 +100,9 @@ func (h *Handler) executeCommand(cmd *protocol.CommandMessage) {
 	h.sendResponse(cmd.RequestID, cmd.Command, result, err)
 }
 
-// dispatch runs a command and returns an optional result payload.
 func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error) {
 	switch cmd.Command {
-	// State commands
+
 	case "unlock":
 		return nil, h.sendCommand("scooter:state", "unlock")
 	case "lock":
@@ -122,15 +112,12 @@ func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error)
 	case "force_lock":
 		return nil, h.sendCommand("scooter:state", "force-lock")
 
-	// Seatbox commands
 	case "open_seatbox":
 		return nil, h.sendCommand("scooter:seatbox", "open")
 
-	// Horn commands
 	case "honk":
 		return nil, h.honk(cmd.Params)
 
-	// Blinker commands
 	case "blinker_left":
 		return nil, h.sendCommand("scooter:blinker", "left")
 	case "blinker_right":
@@ -140,7 +127,6 @@ func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error)
 	case "blinker_off":
 		return nil, h.sendCommand("scooter:blinker", "off")
 
-	// Hardware commands
 	case "dashboard_on":
 		return nil, h.sendCommand("scooter:hardware", "dashboard:on")
 	case "dashboard_off":
@@ -154,7 +140,6 @@ func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error)
 	case "handlebar_unlock":
 		return nil, h.sendCommand("scooter:hardware", "handlebar:unlock")
 
-	// Power commands
 	case "reboot":
 		return nil, h.sendCommand("scooter:power", "reboot")
 	case "hibernate":
@@ -162,7 +147,6 @@ func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error)
 	case "hibernate_manual":
 		return nil, h.sendCommand("scooter:power", "hibernate-manual")
 
-	// Alarm commands (queue-backed FSM control)
 	case "alarm_arm":
 		return nil, h.sendCommand("scooter:alarm", "arm")
 	case "alarm_disarm":
@@ -174,7 +158,6 @@ func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error)
 	case "alarm_stop":
 		return nil, h.sendCommand("scooter:alarm", "stop")
 
-	// Rich / composite commands
 	case "locate":
 		return nil, h.locate()
 	case "alarm":
@@ -184,7 +167,6 @@ func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error)
 	case "redis":
 		return h.redisCommand(cmd.Params)
 
-	// Config management
 	case "config:get":
 		return h.configGet(cmd.Params)
 	case "config:set":
@@ -194,7 +176,6 @@ func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error)
 	case "config:save":
 		return nil, h.cfg.Save()
 
-	// Keycard management
 	case "keycards:list":
 		return h.keycardsList()
 	case "keycards:add":
@@ -206,12 +187,10 @@ func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error)
 	case "keycards:master_key:set":
 		return nil, h.keycardMasterSet(cmd.Params)
 
-	// Lifecycle
 	case "restart":
 		h.restart()
 		return nil, nil
 
-	// Special commands
 	case "get_state":
 		return nil, h.sendStateSnapshot()
 	case "ping":
@@ -222,7 +201,6 @@ func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error)
 	}
 }
 
-// sendCommand sends a command to a Redis list queue
 func (h *Handler) sendCommand(queue, cmd string) error {
 	log.Printf("[CommandHandler] Sending to %s: %s", queue, cmd)
 	if err := ipc.SendRequest(h.client, queue, cmd); err != nil {
@@ -231,11 +209,11 @@ func (h *Handler) sendCommand(queue, cmd string) error {
 	return nil
 }
 
-// honk turns on the horn for a duration then turns it off
+// honk always schedules an off command, including when its caller has returned.
 func (h *Handler) honk(params map[string]any) error {
 	durationMs, ok := params["duration"].(float64)
 	if !ok {
-		// Fall back to a configured default honk duration if provided.
+
 		if def, ok := h.cfg.CommandParam("honk", "duration", nil).(float64); ok {
 			durationMs = def
 		} else {
@@ -263,7 +241,6 @@ func (h *Handler) honk(params map[string]any) error {
 	return nil
 }
 
-// sendStateSnapshot collects and sends current state
 func (h *Handler) sendStateSnapshot() error {
 	log.Printf("[CommandHandler] Collecting state snapshot...")
 	state, err := h.collector.CollectState(h.ctx)
@@ -280,7 +257,6 @@ func (h *Handler) sendStateSnapshot() error {
 	return nil
 }
 
-// sendResponse sends a command response back to the server
 func (h *Handler) sendResponse(requestID, command string, result map[string]any, err error) {
 	resp := &protocol.CommandResponse{
 		Type:      protocol.MsgTypeCommandResponse,

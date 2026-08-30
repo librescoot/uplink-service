@@ -20,20 +20,17 @@ const (
 	protocolVersion   = 0
 )
 
-// Manager manages the connection to the uplink server
 type Manager struct {
 	config  *config.Config
 	version string
 	conn    *websocket.Conn
 	mu      sync.RWMutex
 
-	// State
 	connected     bool
 	authenticated bool
 	connectTime   time.Time
 	lastMessage   time.Time
 
-	// Statistics
 	bytesSent     int64
 	bytesReceived int64
 	messagesSent  int64
@@ -43,20 +40,16 @@ type Manager struct {
 	disconnects   int
 	retryDelay    time.Duration
 
-	// Channels
-	sendChan     chan []byte
-	receiveChan  chan []byte
-	cmdChan      chan *protocol.CommandMessage
-	configChan   chan *protocol.ConfigUpdateMessage
-	connectedCh  chan struct{}
-	done         chan struct{}
+	sendChan    chan []byte
+	receiveChan chan []byte
+	cmdChan     chan *protocol.CommandMessage
+	configChan  chan *protocol.ConfigUpdateMessage
+	connectedCh chan struct{}
+	done        chan struct{}
 
-	// StatusCallback is called whenever the connection state changes.
-	// It receives true when fully connected and authenticated, false otherwise.
 	StatusCallback func(connected bool)
 }
 
-// NewManager creates a new connection manager
 func NewManager(cfg *config.Config, version string) *Manager {
 	return &Manager{
 		config:      cfg,
@@ -71,7 +64,6 @@ func NewManager(cfg *config.Config, version string) *Manager {
 	}
 }
 
-// Start starts the connection manager
 func (m *Manager) Start(ctx context.Context) error {
 	log.Printf("[ConnectionManager] Server: %s", m.config.Uplink.ServerURL)
 	log.Printf("[ConnectionManager] Identifier: %s", m.config.Scooter.Identifier)
@@ -80,7 +72,6 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
-// connectionLoop handles connection and reconnection
 func (m *Manager) connectionLoop(ctx context.Context) {
 	for {
 		select {
@@ -106,7 +97,6 @@ func (m *Manager) connectionLoop(ctx context.Context) {
 	}
 }
 
-// connect establishes a connection and handles it
 func (m *Manager) connect(ctx context.Context) error {
 	log.Printf("[ConnectionManager] Connecting to %s...", m.config.Uplink.ServerURL)
 
@@ -119,8 +109,7 @@ func (m *Manager) connect(ctx context.Context) error {
 		return fmt.Errorf("dial failed: %w", err)
 	}
 	defer func() {
-		// The connection is being torn down regardless of outcome; a failed
-		// close here has no recovery action to take.
+
 		_ = conn.Close()
 		m.mu.Lock()
 		m.conn = nil
@@ -131,7 +120,6 @@ func (m *Manager) connect(ctx context.Context) error {
 	m.conn = conn
 	m.mu.Unlock()
 
-	// Authenticate
 	if err := m.authenticate(); err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
@@ -139,7 +127,6 @@ func (m *Manager) connect(ctx context.Context) error {
 	m.markConnected()
 	log.Printf("[ConnectionManager] Connected and authenticated")
 
-	// Start message handlers with separate done channels for coordination
 	readDone := make(chan struct{})
 	stopSignal := make(chan struct{})
 	var wg sync.WaitGroup
@@ -158,7 +145,6 @@ func (m *Manager) connect(ctx context.Context) error {
 		m.keepaliveLoop(stopSignal)
 	}()
 
-	// Wait for disconnect or context cancel
 	select {
 	case <-ctx.Done():
 		log.Println("[ConnectionManager] Context cancelled, closing connection")
@@ -168,7 +154,6 @@ func (m *Manager) connect(ctx context.Context) error {
 		close(stopSignal)
 	}
 
-	// Wait for all goroutines to finish
 	wg.Wait()
 
 	if ctx.Err() != nil {
@@ -177,7 +162,6 @@ func (m *Manager) connect(ctx context.Context) error {
 	return fmt.Errorf("connection closed")
 }
 
-// authenticate sends authentication message and waits for response
 func (m *Manager) authenticate() error {
 	authMsg := protocol.AuthMessage{
 		Type:            protocol.MsgTypeAuth,
@@ -204,7 +188,6 @@ func (m *Manager) authenticate() error {
 
 	m.addBytesSent(int64(len(data)))
 
-	// Wait for auth response
 	_, message, err := conn.ReadMessage()
 	if err != nil {
 		return fmt.Errorf("read auth response failed: %w", err)
@@ -228,12 +211,12 @@ func (m *Manager) authenticate() error {
 	return nil
 }
 
-// readLoop handles incoming messages
+// readLoop admits commands only after authenticated transport parsing.
 func (m *Manager) readLoop(readDone chan struct{}, stopSignal <-chan struct{}) {
 	defer close(readDone)
 
 	for {
-		// Check if we should stop
+
 		select {
 		case <-stopSignal:
 			return
@@ -307,16 +290,15 @@ func (m *Manager) readLoop(readDone chan struct{}, stopSignal <-chan struct{}) {
 	}
 }
 
-// writeLoop handles outgoing messages
 func (m *Manager) writeLoop(stopSignal <-chan struct{}) {
 	for {
 		select {
 		case <-stopSignal:
-			// Drain remaining messages to prevent sender goroutines from blocking
+			// Drain queued sends so producers cannot remain blocked on shutdown.
 			for {
 				select {
 				case <-m.sendChan:
-					// Discard message
+
 				default:
 					return
 				}
@@ -343,7 +325,6 @@ func (m *Manager) writeLoop(stopSignal <-chan struct{}) {
 	}
 }
 
-// keepaliveLoop sends periodic keepalives
 func (m *Manager) keepaliveLoop(stopSignal <-chan struct{}) {
 	ticker := time.NewTicker(m.config.Uplink.GetKeepaliveInterval())
 	defer ticker.Stop()
@@ -353,7 +334,7 @@ func (m *Manager) keepaliveLoop(stopSignal <-chan struct{}) {
 		case <-stopSignal:
 			return
 		case <-ticker.C:
-			// Check if still connected before sending
+
 			if !m.IsConnected() {
 				continue
 			}
@@ -381,7 +362,6 @@ func (m *Manager) keepaliveLoop(stopSignal <-chan struct{}) {
 	}
 }
 
-// SendState sends full state snapshot
 func (m *Manager) SendState(data map[string]any) error {
 	if !m.IsConnected() {
 		return fmt.Errorf("not connected")
@@ -408,7 +388,6 @@ func (m *Manager) SendState(data map[string]any) error {
 	}
 }
 
-// SendChange sends field-level deltas
 func (m *Manager) SendChange(changes map[string]any) error {
 	if !m.IsConnected() {
 		return fmt.Errorf("not connected")
@@ -434,7 +413,7 @@ func (m *Manager) SendChange(changes map[string]any) error {
 	}
 }
 
-// SendTelemetryDelta sends changed leaves plus a list of removed paths.
+// SendTelemetryDelta carries explicit removals so the cloud can prune stale leaves.
 func (m *Manager) SendTelemetryDelta(changes map[string]any, removed []string) error {
 	if !m.IsConnected() {
 		return fmt.Errorf("not connected")
@@ -461,7 +440,6 @@ func (m *Manager) SendTelemetryDelta(changes map[string]any, removed []string) e
 	}
 }
 
-// SendTelemetryBatch replays a batch of buffered offline snapshots.
 func (m *Manager) SendTelemetryBatch(snapshots []protocol.TelemetrySnapshot) error {
 	if !m.IsConnected() {
 		return fmt.Errorf("not connected")
@@ -488,7 +466,6 @@ func (m *Manager) SendTelemetryBatch(snapshots []protocol.TelemetrySnapshot) err
 	}
 }
 
-// SendEvent sends critical event
 func (m *Manager) SendEvent(eventType string, data map[string]any) error {
 	if !m.IsConnected() {
 		return fmt.Errorf("not connected")
@@ -516,7 +493,6 @@ func (m *Manager) SendEvent(eventType string, data map[string]any) error {
 	}
 }
 
-// SendCommandResponse sends a response to a server command
 func (m *Manager) SendCommandResponse(resp *protocol.CommandResponse) error {
 	if !m.IsConnected() {
 		return fmt.Errorf("not connected")
@@ -537,18 +513,16 @@ func (m *Manager) SendCommandResponse(resp *protocol.CommandResponse) error {
 	}
 }
 
-// CommandChannel returns the channel for receiving commands
 func (m *Manager) CommandChannel() <-chan *protocol.CommandMessage {
 	return m.cmdChan
 }
 
-// ConfigUpdateChannel returns the channel for server-pushed config updates.
 func (m *Manager) ConfigUpdateChannel() <-chan *protocol.ConfigUpdateMessage {
 	return m.configChan
 }
 
-// RequestReconnect drops the current connection so the connection loop redials.
-// Used after a config change that affects how or where we connect.
+// RequestReconnect deliberately drops the socket so changed connection settings
+// take effect through the normal authenticated reconnect path.
 func (m *Manager) RequestReconnect() {
 	m.mu.RLock()
 	conn := m.conn
@@ -559,19 +533,16 @@ func (m *Manager) RequestReconnect() {
 	}
 }
 
-// IsConnected returns whether the connection is active
 func (m *Manager) IsConnected() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.connected && m.authenticated
 }
 
-// ConnectedChannel returns a channel that signals when connection is established
 func (m *Manager) ConnectedChannel() <-chan struct{} {
 	return m.connectedCh
 }
 
-// GetStats returns connection statistics
 func (m *Manager) GetStats() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -587,21 +558,22 @@ func (m *Manager) GetStats() map[string]any {
 	}
 
 	return map[string]any{
-		"connected":       m.connected,
-		"authenticated":   m.authenticated,
-		"uptime":          uptime.String(),
-		"idle":            idle.String(),
-		"bytes_sent":      m.bytesSent,
-		"bytes_received":  m.bytesReceived,
-		"messages_sent":   m.messagesSent,
-		"messages_recv":   m.messagesRecv,
-		"telemetry_sent":  m.telemetrySent,
-		"commands_recv":   m.commandsRecv,
-		"disconnects":     m.disconnects,
+		"connected":      m.connected,
+		"authenticated":  m.authenticated,
+		"uptime":         uptime.String(),
+		"idle":           idle.String(),
+		"bytes_sent":     m.bytesSent,
+		"bytes_received": m.bytesReceived,
+		"messages_sent":  m.messagesSent,
+		"messages_recv":  m.messagesRecv,
+		"telemetry_sent": m.telemetrySent,
+		"commands_recv":  m.commandsRecv,
+		"disconnects":    m.disconnects,
 	}
 }
 
-// Helper methods
+// markConnected signals once per authenticated connection; consumers use it to
+// reset their remote baseline and flush pending work.
 func (m *Manager) markConnected() {
 	m.mu.Lock()
 	m.connected = true
@@ -610,7 +582,6 @@ func (m *Manager) markConnected() {
 	cb := m.StatusCallback
 	m.mu.Unlock()
 
-	// Signal connection established (non-blocking)
 	select {
 	case m.connectedCh <- struct{}{}:
 	default:

@@ -2,11 +2,10 @@ package protocol
 
 import "time"
 
-// MessageType represents the type of message
 type MessageType string
 
 const (
-	// Client → Server
+	// Client-to-server messages.
 	MsgTypeAuth            MessageType = "auth"
 	MsgTypeState           MessageType = "state"
 	MsgTypeChange          MessageType = "change"
@@ -16,19 +15,17 @@ const (
 	MsgTypeKeepalive       MessageType = "keepalive"
 	MsgTypeCommandResponse MessageType = "command_response"
 
-	// Server → Client
+	// Server-to-client messages.
 	MsgTypeAuthResponse MessageType = "auth_response"
 	MsgTypeCommand      MessageType = "command"
 	MsgTypeConfigUpdate MessageType = "config_update"
 )
 
-// BaseMessage is the base structure for all messages
 type BaseMessage struct {
 	Type      MessageType `json:"type"`
 	Timestamp string      `json:"timestamp"`
 }
 
-// AuthMessage - Client authenticates with server
 type AuthMessage struct {
 	Type            MessageType `json:"type"`
 	Client          string      `json:"client"`
@@ -39,7 +36,6 @@ type AuthMessage struct {
 	Timestamp       string      `json:"timestamp"`
 }
 
-// AuthResponse - Server responds to authentication
 type AuthResponse struct {
 	Type       MessageType `json:"type"`
 	Status     string      `json:"status"`
@@ -47,23 +43,21 @@ type AuthResponse struct {
 	ServerTime string      `json:"server_time"`
 }
 
-// StateMessage - Client sends full state snapshot
 type StateMessage struct {
-	Type      MessageType            `json:"type"`
+	Type      MessageType    `json:"type"`
 	Data      map[string]any `json:"data"`
-	Timestamp string                 `json:"timestamp"`
+	Timestamp string         `json:"timestamp"`
 }
 
-// ChangeMessage - Client sends field-level deltas
 type ChangeMessage struct {
-	Type      MessageType            `json:"type"`
+	Type      MessageType    `json:"type"`
 	Changes   map[string]any `json:"changes"`
-	Timestamp string                 `json:"timestamp"`
+	Timestamp string         `json:"timestamp"`
 }
 
-// TelemetryDeltaMessage - Client sends changed leaves plus a list of removed
-// paths (dotted "hash.field" keys) so the server can prune deleted fields that
-// a merge alone can never remove.
+// Removed lets the receiver delete leaves a merge cannot remove.
+// TelemetryDeltaMessage carries dotted removed paths because a merge alone
+// cannot express deletion in the wire protocol.
 type TelemetryDeltaMessage struct {
 	Type      MessageType    `json:"type"`
 	Changes   map[string]any `json:"changes"`
@@ -71,20 +65,18 @@ type TelemetryDeltaMessage struct {
 	Timestamp string         `json:"timestamp"`
 }
 
-// TelemetrySnapshot is one timestamped full-state snapshot within a batch.
+// TelemetrySnapshot preserves its collection timestamp during offline replay.
 type TelemetrySnapshot struct {
 	Data      map[string]any `json:"data"`
 	Timestamp string         `json:"timestamp"`
 }
 
-// TelemetryBatchMessage - Client replays buffered offline snapshots.
 type TelemetryBatchMessage struct {
 	Type      MessageType         `json:"type"`
 	Snapshots []TelemetrySnapshot `json:"snapshots"`
 	Timestamp string              `json:"timestamp"`
 }
 
-// ConfigUpdateMessage - Server pushes dotted-path config deltas to the client.
 type ConfigUpdateMessage struct {
 	Type      MessageType       `json:"type"`
 	Deltas    map[string]string `json:"deltas"`
@@ -92,40 +84,38 @@ type ConfigUpdateMessage struct {
 	Timestamp string            `json:"timestamp"`
 }
 
-// EventMessage - Client sends critical event
 type EventMessage struct {
-	Type      MessageType            `json:"type"`
-	Event     string                 `json:"event"`
+	Type      MessageType    `json:"type"`
+	Event     string         `json:"event"`
 	Data      map[string]any `json:"data"`
-	Timestamp string                 `json:"timestamp"`
+	Timestamp string         `json:"timestamp"`
 }
 
-// KeepaliveMessage - Bidirectional keepalive
 type KeepaliveMessage struct {
 	Type      MessageType `json:"type"`
 	Timestamp string      `json:"timestamp"`
 }
 
-// CommandMessage - Server sends command to client
+// CommandMessage is a server-originated request; RequestID is echoed unchanged.
 type CommandMessage struct {
-	Type      MessageType            `json:"type"`
-	RequestID string                 `json:"request_id"`
-	Command   string                 `json:"command"`
+	Type      MessageType    `json:"type"`
+	RequestID string         `json:"request_id"`
+	Command   string         `json:"command"`
 	Params    map[string]any `json:"params,omitempty"`
-	Timestamp string                 `json:"timestamp"`
+	Timestamp string         `json:"timestamp"`
 }
 
-// CommandResponse - Client responds to command
+// CommandResponse correlates exactly to the remote request ID.
 type CommandResponse struct {
-	Type      MessageType            `json:"type"`
-	RequestID string                 `json:"request_id"`
-	Status    string                 `json:"status"`
+	Type      MessageType    `json:"type"`
+	RequestID string         `json:"request_id"`
+	Status    string         `json:"status"`
 	Result    map[string]any `json:"result,omitempty"`
-	Error     string                 `json:"error,omitempty"`
-	Timestamp string                 `json:"timestamp"`
+	Error     string         `json:"error,omitempty"`
+	Timestamp string         `json:"timestamp"`
 }
 
-// Helper function to create timestamp string
+// Timestamp is RFC3339 UTC for every protocol message.
 func Timestamp() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }

@@ -24,7 +24,7 @@ func TestNowInvalidUntilValid(t *testing.T) {
 
 func TestReproject(t *testing.T) {
 	c := NewClock()
-	rel := c.Now() // relative marker near offset 0
+	rel := c.Now()
 	c.MarkValid()
 
 	abs, ok := c.Reproject(rel)
@@ -35,12 +35,11 @@ func TestReproject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reprojected not RFC3339: %v", err)
 	}
-	// The reprojected instant should be very close to now.
+
 	if d := time.Since(parsed); d < -2*time.Second || d > 2*time.Second {
 		t.Errorf("reprojected time off by %v", d)
 	}
 
-	// Absolute timestamps pass through unchanged.
 	fixed := "2026-01-02T15:04:05Z"
 	out, ok := c.Reproject(fixed)
 	if !ok || out != fixed {

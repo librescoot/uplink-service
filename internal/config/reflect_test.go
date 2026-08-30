@@ -38,7 +38,6 @@ func TestReflectionRoundTrip(t *testing.T) {
 		t.Errorf("delete did not zero the field: %q", c.Uplink.ServerURL)
 	}
 
-	// Pointer field (movement enabled) should be settable.
 	if err := c.SetField("events.movement.enabled", "false"); err != nil {
 		t.Fatalf("set movement enabled: %v", err)
 	}

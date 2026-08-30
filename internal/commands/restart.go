@@ -7,13 +7,8 @@ import (
 	"time"
 )
 
-// restartGraceperiod gives an in-flight command response time to leave the
-// wire before the process exits and systemd respawns it.
 const restartGracePeriod = 500 * time.Millisecond
 
-// restart signals the process to terminate after a short grace period. The
-// systemd unit is configured with Restart=always, so the service comes back
-// up and reloads its on-disk config.
 func (h *Handler) restart() {
 	log.Printf("[CommandHandler] Restart requested; exiting in %s for systemd respawn", restartGracePeriod)
 	go func() {

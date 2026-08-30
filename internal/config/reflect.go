@@ -10,8 +10,6 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-// GetField returns the value at a dotted YAML path, e.g. "uplink.server_url"
-// or "telemetry.buffer.enabled".
 func (c *Config) GetField(path string) (any, error) {
 	v, err := resolvePath(reflect.ValueOf(c).Elem(), splitPath(path))
 	if err != nil {
@@ -20,9 +18,6 @@ func (c *Config) GetField(path string) (any, error) {
 	return v.Interface(), nil
 }
 
-// SetField assigns a scalar field at a dotted YAML path from its string form.
-// Only struct scalar fields (string/bool/int/float and pointers to them) are
-// settable; map and slice fields are read-only through this accessor.
 func (c *Config) SetField(path, value string) error {
 	v, err := resolvePath(reflect.ValueOf(c).Elem(), splitPath(path))
 	if err != nil {
@@ -34,7 +29,6 @@ func (c *Config) SetField(path, value string) error {
 	return assignScalar(v, value)
 }
 
-// DeleteField resets a field at a dotted YAML path to its zero value.
 func (c *Config) DeleteField(path string) error {
 	v, err := resolvePath(reflect.ValueOf(c).Elem(), splitPath(path))
 	if err != nil {
@@ -47,8 +41,6 @@ func (c *Config) DeleteField(path string) error {
 	return nil
 }
 
-// Save marshals the config back to its source file, first writing a .backup
-// copy of the previous contents.
 func (c *Config) Save() error {
 	if c.SourcePath == "" {
 		return fmt.Errorf("no source path recorded for config")
@@ -63,8 +55,6 @@ func (c *Config) Save() error {
 	return os.WriteFile(c.SourcePath, data, 0o600)
 }
 
-// RawYAML returns the current on-disk contents of the config file, or an error
-// if it cannot be read.
 func (c *Config) RawYAML() (string, error) {
 	if c.SourcePath == "" {
 		return "", fmt.Errorf("no source path recorded for config")
@@ -76,8 +66,6 @@ func (c *Config) RawYAML() (string, error) {
 	return string(data), nil
 }
 
-// ApplyDeltas sets several dotted-path fields at once (used by config push).
-// It applies every delta and returns the first error encountered, if any.
 func (c *Config) ApplyDeltas(deltas map[string]string) error {
 	var firstErr error
 	for path, value := range deltas {

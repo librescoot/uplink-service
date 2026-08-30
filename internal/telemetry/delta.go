@@ -12,35 +12,27 @@ import (
 	"github.com/librescoot/uplink-service/internal/timeutil"
 )
 
-// fullResyncEvery forces a full snapshot after this many consecutive deltas so
-// the server's view cannot drift indefinitely.
+// Periodic full state bounds server/client drift from missed deltas.
 const fullResyncEvery = 20
 
-// parkedGPSSmoothingMeters is the distance a parked scooter's GPS fix must move
-// before we report a new position, suppressing stationary jitter.
+// Parked fixes must move this far before telemetry reports a new position.
 const parkedGPSSmoothingMeters = 5.0
 
-// TelemetrySink is the subset of the connection manager the publisher needs.
 type TelemetrySink interface {
 	IsConnected() bool
 	SendState(data map[string]any) error
 	SendTelemetryDelta(changes map[string]any, removed []string) error
 }
 
-// TelemetryBuffer is the subset of the offline buffer the publisher needs.
 type TelemetryBuffer interface {
 	Add(snapshot map[string]any, timestamp string)
 }
 
-// Publisher is the single serialization point for telemetry. It diffs each
-// fresh snapshot against the last one sent and emits either a full state
-// message or a sparse delta (with removed paths), forcing a full resync on the
-// first send, on vehicle-state changes, and periodically.
 type Publisher struct {
 	collector *Collector
 	sink      TelemetrySink
 	clock     *timeutil.Clock
-	buffer    TelemetryBuffer // may be nil
+	buffer    TelemetryBuffer
 
 	mu               sync.Mutex
 	lastSentFlat     map[string]string
@@ -52,8 +44,6 @@ type Publisher struct {
 	lastGPSValid bool
 }
 
-// NewPublisher creates a telemetry publisher. buffer may be nil to disable
-// offline buffering.
 func NewPublisher(collector *Collector, sink TelemetrySink, clock *timeutil.Clock, buffer TelemetryBuffer) *Publisher {
 	return &Publisher{
 		collector: collector,
@@ -63,10 +53,8 @@ func NewPublisher(collector *Collector, sink TelemetrySink, clock *timeutil.Cloc
 	}
 }
 
-// compile-time assertion that *connection.Manager satisfies TelemetrySink.
 var _ TelemetrySink = (*connection.Manager)(nil)
 
-// Flush collects a fresh snapshot and publishes it as a full or delta message.
 func (p *Publisher) Flush(ctx context.Context, forceFull bool) error {
 	snapshot, err := p.collector.CollectState(ctx)
 	if err != nil {
@@ -75,15 +63,15 @@ func (p *Publisher) Flush(ctx context.Context, forceFull bool) error {
 	return p.Publish(snapshot, forceFull)
 }
 
-// ResetBaseline forces the next publish to be a full snapshot. Call on
-// disconnect so the reconnect send re-syncs the server from scratch.
+// ResetBaseline makes reconnect send state, never a delta with an unknown server base.
 func (p *Publisher) ResetBaseline() {
 	p.mu.Lock()
 	p.lastSentFlat = nil
 	p.mu.Unlock()
 }
 
-// Publish emits a snapshot as full state or a delta.
+// Publish serializes snapshots and deltas; removed paths are transmitted because
+// a merge-only delta cannot delete a server-side field.
 func (p *Publisher) Publish(snapshot map[string]any, forceFull bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -92,9 +80,8 @@ func (p *Publisher) Publish(snapshot map[string]any, forceFull bool) error {
 	flat := flattenState(snapshot)
 	vehicleState := stateOf(snapshot)
 
-	// When offline, buffer the full snapshot and arrange for a full resync on
-	// reconnect. Do not attempt to send.
 	if !p.sink.IsConnected() {
+		// Buffer full snapshots; deltas require the server baseline.
 		if p.buffer != nil {
 			p.buffer.Add(snapshot, p.clock.Now())
 		}
@@ -130,8 +117,7 @@ func (p *Publisher) Publish(snapshot map[string]any, forceFull bool) error {
 	return nil
 }
 
-// smoothParkedGPS holds the last reported position while the scooter is not
-// actively driving, until the fix moves beyond the smoothing threshold.
+// smoothParkedGPS suppresses stationary jitter but never masks movement while driving.
 func (p *Publisher) smoothParkedGPS(snapshot map[string]any) {
 	gps, ok := snapshot["gps"].(map[string]any)
 	if !ok {
@@ -144,9 +130,10 @@ func (p *Publisher) smoothParkedGPS(snapshot map[string]any) {
 	}
 
 	driving := stateOf(snapshot) == "ready-to-drive"
+	// Suppress stationary GPS jitter without hiding movement.
 	if !driving && p.lastGPSValid {
 		if geo.HaversineMeters(p.lastGPSLat, p.lastGPSLng, lat, lng) < parkedGPSSmoothingMeters {
-			// Report the held position instead of the jittered one.
+
 			gps["latitude"] = formatFloat(p.lastGPSLat)
 			gps["longitude"] = formatFloat(p.lastGPSLng)
 			return
@@ -167,7 +154,6 @@ func stateOf(snapshot map[string]any) string {
 	return ""
 }
 
-// flattenState converts a two-level snapshot into "hash.field" -> value pairs.
 func flattenState(state map[string]any) map[string]string {
 	out := make(map[string]string)
 	for hash, v := range state {
@@ -182,7 +168,6 @@ func flattenState(state map[string]any) map[string]string {
 	return out
 }
 
-// nestFlat rebuilds a two-level nested map from "hash.field" -> value pairs.
 func nestFlat(flat map[string]string) map[string]any {
 	out := make(map[string]any)
 	for path, val := range flat {
@@ -201,7 +186,6 @@ func nestFlat(flat map[string]string) map[string]any {
 	return out
 }
 
-// diffFlat returns the changed leaves and the paths present in old but not new.
 func diffFlat(old, current map[string]string) (changed map[string]string, removed []string) {
 	changed = make(map[string]string)
 	for k, v := range current {

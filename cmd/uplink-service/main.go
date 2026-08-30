@@ -22,7 +22,7 @@ import (
 	"github.com/librescoot/uplink-service/internal/timeutil"
 )
 
-var version = "dev" // Set via ldflags at build time
+var version = "dev"
 
 func main() {
 	configPath := flag.String("config", "/data/uplink-service/uplink.yaml", "Path to configuration file")
@@ -34,7 +34,6 @@ func main() {
 		return
 	}
 
-	// Skip timestamps if running under systemd/journald
 	if os.Getenv("JOURNAL_STREAM") != "" {
 		log.SetFlags(0)
 	} else {
@@ -42,7 +41,6 @@ func main() {
 	}
 	log.Printf("Starting uplink-service %s", version)
 
-	// Load configuration
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -50,11 +48,9 @@ func main() {
 
 	log.Printf("Loaded config from %s", *configPath)
 
-	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Parse Redis URL
 	redisAddr := cfg.RedisURL
 	redisPort := 6379
 	if strings.Contains(redisAddr, ":") {
@@ -65,7 +61,6 @@ func main() {
 		}
 	}
 
-	// Initialize redis-ipc client
 	client, err := ipc.New(
 		ipc.WithAddress(redisAddr),
 		ipc.WithPort(redisPort),
@@ -80,7 +75,6 @@ func main() {
 		log.Fatalf("Failed to create Redis client: %v", err)
 	}
 
-	// Set up cloud status reporting to Redis
 	internetHash := client.Hash("internet")
 	writeCloudStatus := func(connected bool) {
 		status := "disconnected"
@@ -91,32 +85,25 @@ func main() {
 			log.Printf("[Main] Failed to update internet:unu-cloud: %v", err)
 		}
 	}
-	// Report disconnected at startup before the first connection attempt
+
 	writeCloudStatus(false)
 
-	// Clock: anchored to a monotonic reference; invalid until NTP succeeds.
-	// A plausible-looking wall-clock year is NOT trusted (the RTC is seeded
-	// with the firmware build time at first boot).
 	clock := timeutil.NewClock()
 	startClockSync(ctx, cfg, clock)
 
-	// Modem identity poller (background; degrades gracefully off-target).
 	modem := modeminfo.NewPoller(0)
 	go modem.Start(ctx)
 
-	// Initialize components
 	connMgr := connection.NewManager(cfg, version)
 	collector := telemetry.NewCollector(client, version, cfg, modem)
 	monitor := telemetry.NewMonitor(client, collector, connMgr)
 	eventDetector := telemetry.NewEventDetector(client, connMgr, monitor, cfg.Telemetry.EventBufferPath, cfg.Telemetry.EventMaxRetries)
 	cmdHandler := commands.NewHandler(connMgr, client, collector, cfg)
 
-	// Telemetry buffer (offline persistence) and publisher (delta engine).
 	buffer := telemetry.NewBuffer(client, connMgr, clock, cfg.Telemetry.Buffer, cfg.Telemetry.GetTransmitPeriod())
 	publisher := telemetry.NewPublisher(collector, connMgr, clock, buffer)
 	monitor.SetFlusher(publisher)
 
-	// On disconnect, force the next send to be a full resync.
 	connMgr.StatusCallback = func(connected bool) {
 		writeCloudStatus(connected)
 		if !connected {
@@ -124,15 +111,12 @@ func main() {
 		}
 	}
 
-	// Wire up bidirectional flushing: monitor <-> eventDetector
 	monitor.SetEventFlusher(eventDetector)
 
-	// Start connection manager
 	if err := connMgr.Start(ctx); err != nil {
 		log.Fatalf("Failed to start connection manager: %v", err)
 	}
 
-	// Handle connection events - full resync on every connect/reconnect
 	go func() {
 		firstConnection := true
 		for {
@@ -142,14 +126,13 @@ func main() {
 			case <-connMgr.ConnectedChannel():
 				if firstConnection {
 					log.Println("[Main] Connection established, starting watchers...")
-					// Start watchers first to avoid missing changes during state collection
+
 					go monitor.Start(ctx)
 					go eventDetector.Start(ctx)
 				} else {
 					log.Println("[Main] Reconnected")
 				}
 
-				// Initialize baselines on first connection only
 				if firstConnection {
 					state, err := collector.CollectState(ctx)
 					if err != nil {
@@ -162,28 +145,23 @@ func main() {
 					go buffer.StartDrainLoop(ctx)
 				}
 
-				// Send a forced full snapshot via the publisher.
 				log.Println("[Main] Sending full telemetry snapshot...")
 				if err := publisher.Flush(ctx, true); err != nil {
 					log.Printf("[Main] Failed to publish snapshot: %v", err)
 				}
 
-				// Replay buffered events and offline telemetry.
 				go eventDetector.FlushBufferedEvents(ctx)
 				go buffer.Flush()
 			}
 		}
 	}()
 
-	// Liveness: publish on a state-based interval even with no field changes.
 	go intervalTicker(ctx, cfg, client, connMgr, publisher)
 
 	cmdHandler.Start(ctx)
 
-	// Start stats logger
 	go statsLogger(ctx, connMgr)
 
-	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
@@ -192,14 +170,10 @@ func main() {
 	cancel()
 	writeCloudStatus(false)
 
-	// Give goroutines time to clean up
 	time.Sleep(1 * time.Second)
 	log.Println("Stopped.")
 }
 
-// startClockSync attempts an immediate NTP sync and, on failure, keeps retrying
-// in the background. Clock validity is established only by a successful NTP
-// query — never by a plausible-looking wall-clock value.
 func startClockSync(ctx context.Context, cfg *config.Config, clock *timeutil.Clock) {
 	if !cfg.NTP.IsEnabled() {
 		log.Println("[Clock] NTP disabled; timestamps remain monotonic-relative until valid")
@@ -229,8 +203,6 @@ func startClockSync(ctx context.Context, cfg *config.Config, clock *timeutil.Clo
 	}()
 }
 
-// intervalTicker publishes a fresh snapshot on a state-based cadence so the
-// server sees liveness even when no monitored field changes.
 func intervalTicker(ctx context.Context, cfg *config.Config, client *ipc.Client, connMgr *connection.Manager, publisher *telemetry.Publisher) {
 	for {
 		interval := telemetryInterval(cfg, client)
@@ -247,8 +219,6 @@ func intervalTicker(ctx context.Context, cfg *config.Config, client *ipc.Client,
 	}
 }
 
-// telemetryInterval selects the reporting interval for the current vehicle
-// state and main-battery presence.
 func telemetryInterval(cfg *config.Config, client *ipc.Client) time.Duration {
 	state, _ := client.HGet("vehicle", "state")
 	present := false
@@ -258,7 +228,6 @@ func telemetryInterval(cfg *config.Config, client *ipc.Client) time.Duration {
 	return cfg.Telemetry.Intervals.Interval(state, present)
 }
 
-// statsLogger prints connection statistics periodically
 func statsLogger(ctx context.Context, connMgr *connection.Manager) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()

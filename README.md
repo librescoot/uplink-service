@@ -1,230 +1,114 @@
-# Uplink Service
-
-Scooter-side client for librescoot uplink system. Maintains persistent connection to uplink-server, sends telemetry, and receives commands.
+# Librescoot Uplink Service
 
 Part of the [Librescoot](https://librescoot.org/) open-source platform.
 
-## Features
+## Overview
 
-- WebSocket connection with automatic reconnection
-- Exponential backoff (1s → 2s → 4s → ... → 5min max)
-- Token-based authentication (VIN + token)
-- Real-time telemetry from Redis via redis-ipc library
-  - Nested object format for state and change messages
-  - Baseline initialization to prevent duplicate change notifications
-  - Configurable debounce to batch rapid changes
-- Event detection with persistent buffering and retry logic
-  - Battery critical monitoring (traction batteries + control board battery)
-  - Power state changes and NRF reset tracking
-  - GPS fix status changes
-  - Connectivity status monitoring
-  - Temperature monitoring (batteries, ECU)
-  - OTA update phase transitions
-  - Alarm trigger and state changes
-  - Fault stream monitoring (events:faults)
-  - Exponential backoff retry (configurable max retries)
-- Command reception and execution (lock/unlock, power, hardware control, etc.)
-- Connection statistics tracking
-- Configurable keepalive and debounce intervals
+`uplink-service` is the scooter-side WebSocket client for Librescoot cloud connectivity. After authenticating with the configured vehicle identifier and token, it collects Redis/Valkey state, publishes snapshots, deltas, buffered telemetry, and events, accepts cloud commands, and reflects cloud connectivity in Redis.
 
-## Building
+## Capabilities
 
-```bash
-# Download dependencies
-make deps
+- Authenticated WebSocket connection with 1-second exponential reconnect backoff capped by configuration and configurable keepalives.
+- Initial full state and subsequent priority/debounced telemetry updates from vehicle Redis/Valkey hashes.
+- Persistent telemetry buffering and line-oriented event buffering for offline operation.
+- Event reporting for battery, power, connectivity, locks, GPS, temperature, OTA, alarm, and Redis Stream fault changes.
+- Server-issued commands for vehicle control, diagnostics, configuration, keycards, and service restart, subject to configuration and environment checks.
+- NTP clock synchronization and modem metadata collection.
 
-# Build service
-make build
+## Operation and interfaces
 
-# Build for specific platforms
-make client-linux-amd64
-make client-linux-arm
+### Redis/Valkey contract
+
+The service uses `redis_url` (default `localhost:6379`) and collects state from these hashes:
+
+```text
+vehicle, battery:0, battery:1, aux-battery, cb-battery, engine-ecu,
+power-manager, power-mux, internet, modem, gps, keycard, ble, dashboard,
+system, ota, alarm, navigation, scooter
 ```
+
+It watches a subset for telemetry changes and event detection. On startup and connection it writes `internet.unu-cloud=disconnected` or `connected` to show WebSocket authentication status. The collector adds `meta.build-version`, `meta.environment`, and `meta.identifier`; it also adds an MDB board serial and modem fields when available. Vehicle states `hop-on` and `hop-on-learning` are translated to `stand-by` and `parked` respectively in cloud telemetry.
+
+Remote commands are translated into Redis queue requests. Common mappings are:
+
+| Remote command | Redis queue and value |
+|---|---|
+| `unlock`, `lock`, `lock_hibernate`, `force_lock` | `scooter:state`: `unlock`, `lock`, `lock-hibernate`, `force-lock` |
+| `open_seatbox` | `scooter:seatbox`: `open` |
+| `honk` | `scooter:horn`: `on`, then `off` after required `duration` milliseconds |
+| `blinker_left`, `blinker_right`, `blinker_both`, `blinker_off` | `scooter:blinker`: `left`, `right`, `both`, `off` |
+| `dashboard_on`, `dashboard_off`, `engine_on`, `engine_off`, `handlebar_lock`, `handlebar_unlock` | `scooter:hardware` with the corresponding `name:on`, `name:off`, `handlebar:lock`, or `handlebar:unlock` value |
+| `reboot`, `hibernate`, `hibernate_manual` | `scooter:power`: `reboot`, `hibernate`, `hibernate-manual` |
+| `alarm_arm`, `alarm_disarm`, `alarm_enable`, `alarm_disable`, `alarm_stop` | `scooter:alarm`: `arm`, `disarm`, `enable`, `disable`, `stop` |
+
+It also handles `locate`, `alarm`, `navigate`, `redis`, `config:get`, `config:set`, `config:del`, `config:save`, `keycards:list`, `keycards:add`, `keycards:delete`, `keycards:master_key:get`, `keycards:master_key:set`, `restart`, `get_state`, and `ping`. Every accepted command receives a `command_response` carrying the original request ID and a `success` or `failed` status.
+
+### WebSocket protocol
+
+Client messages use JSON with RFC3339 UTC timestamps: `auth`, `state`, `change`, `telemetry_delta`, `telemetry_batch`, `event`, `keepalive`, and `command_response`. The authentication payload includes `identifier`, `token`, client version, and protocol version `0`. Server messages are `auth_response`, `command`, `config_update`, and `keepalive`.
+
+The first successful connection initializes telemetry/event baselines, sends a full state snapshot, and starts the offline telemetry drain. Disconnecting resets the telemetry baseline so the next connection receives a fresh full snapshot. `config_update` deltas are applied to the loaded YAML file; a message with `restart: true` requests a service restart.
 
 ## Configuration
 
-Create `/data/uplink.yml` (see `configs/uplink.example.yml`):
+The program accepts:
+
+```text
+uplink-service [-config PATH] [-version]
+```
+
+The default configuration path is `/data/uplink-service/uplink.yaml`. Start with [`configs/uplink.example.yml`](configs/uplink.example.yml), which documents the available YAML structure. At minimum set the cloud URL and credentials:
 
 ```yaml
 uplink:
-  server_url: "ws://uplink.example.com:8080/ws"
-  keepalive_interval: "5m"
-  reconnect_max_delay: "5m"
+  server_url: "wss://uplink.example.invalid/ws"
 
 scooter:
-  identifier: "WUNU2S3B7MZ000147"  # Vehicle VIN
-  token: "your-auth-token-here"
-
-telemetry:
-  debounce_duration: "1s"          # Debounce interval for telemetry updates
-  event_buffer_path: "/data/uplink-events.queue"
-  event_max_retries: 10
+  identifier: "VEHICLE_IDENTIFIER"
+  token: "REPLACE_WITH_SECRET"
 
 redis_url: "localhost:6379"
 ```
 
-## Running
+Unset values receive these relevant defaults: five-minute keepalive, five-minute reconnect cap, `/data/uplink-service/events.queue`, event retry limit 5, five-minute transmit period, telemetry buffer maximum 1000 snapshots, telemetry-buffer retry limit 5, one-minute buffer retry interval, `/data/uplink-service/telemetry-buffer.json`, production environment, `pool.ntp.org`, and local Redis/Valkey.
 
-```bash
-./bin/uplink-service -config /etc/librescoot/uplink.yml
+`telemetry.intervals` controls periodic snapshot cadence. The defaults are 30 seconds in `ready-to-drive`, five minutes in other states with a main battery, eight hours without one, and 24 hours while `hibernating`.
+
+The `commands` map can disable individual commands or define default parameters. The `shell` command is rejected unless `environment: development`; use production for deployed vehicles. `service_name` controls the unit targeted by restart handling and is auto-detected when omitted.
+
+## Build and test
+
+Requires Go and the dependencies declared in `go.mod`.
+
+```sh
+make build       # static Linux ARMv7 binary: bin/uplink-service
+make build-host  # host binary: bin/uplink-service
+make test
+make lint        # requires golangci-lint
 ```
 
-## Commands
+`make run` builds for the host and uses `configs/uplink.example.yml`. `make fmt`, `make deps`, and `make clean` are also available.
 
-The uplink service supports these commands from the server:
+## Deployment and runtime dependencies
 
-### State Commands
-| Command | Queue | Description |
-|---------|-------|-------------|
-| `unlock` | `scooter:state` | Unlocks the vehicle |
-| `lock` | `scooter:state` | Locks the vehicle |
-| `lock_hibernate` | `scooter:state` | Locks and prepares for hibernation |
-| `force_lock` | `scooter:state` | Forces lock regardless of state |
+The Yocto package installs `/usr/bin/uplink-service`, `librescoot-uplink.service`, and tmpfiles rule `/etc/tmpfiles.d/uplink-service.conf`. The rule creates `/data/uplink-service` as `root:root` mode `0755`. The unit requires `valkey.service`, starts after the network and Valkey, requires `/data/uplink-service/uplink.yaml` to exist, runs with that directory as its working directory, and executes:
 
-### Seatbox Commands
-| Command | Queue | Description |
-|---------|-------|-------------|
-| `open_seatbox` | `scooter:seatbox` | Opens seatbox lock |
-
-### Horn & Blinker Commands
-| Command | Queue | Description |
-|---------|-------|-------------|
-| `honk` | `scooter:horn` | Activates horn (duration in params) |
-| `blinker_left` | `scooter:blinker` | Activates left blinker |
-| `blinker_right` | `scooter:blinker` | Activates right blinker |
-| `blinker_both` | `scooter:blinker` | Activates hazard lights |
-| `blinker_off` | `scooter:blinker` | Turns off blinkers |
-
-### Hardware Commands
-| Command | Queue | Description |
-|---------|-------|-------------|
-| `dashboard_on` | `scooter:hardware` | Powers on dashboard |
-| `dashboard_off` | `scooter:hardware` | Powers off dashboard |
-| `engine_on` | `scooter:hardware` | Enables engine |
-| `engine_off` | `scooter:hardware` | Disables engine |
-| `handlebar_lock` | `scooter:hardware` | Engages handlebar lock |
-| `handlebar_unlock` | `scooter:hardware` | Releases handlebar lock |
-
-### Power Commands
-| Command | Queue | Description |
-|---------|-------|-------------|
-| `reboot` | `scooter:power` | Initiates system reboot |
-| `hibernate` | `scooter:power` | Enters automatic hibernation |
-| `hibernate_manual` | `scooter:power` | Enters manual hibernation mode |
-
-### Alarm Commands
-| Command | Queue | Description |
-|---------|-------|-------------|
-| `alarm_arm` | `scooter:alarm` | Force-arm at runtime (does not change `alarm.enabled`) |
-| `alarm_disarm` | `scooter:alarm` | Force-disarm at runtime (does not change `alarm.enabled`) |
-| `alarm_enable` | `scooter:alarm` | Enable the alarm system (persists in settings) |
-| `alarm_disable` | `scooter:alarm` | Disable the alarm system (persists in settings) |
-| `alarm_stop` | `scooter:alarm` | Stop an active alarm |
-
-### Special Commands
-| Command | Queue | Description |
-|---------|-------|-------------|
-| `get_state` | - | Sends full state snapshot |
-| `ping` | - | No-op for testing connectivity |
-
-All commands return a `command_response` message with status "success" or "failed".
-
-## Protocol
-
-### Client → Server Messages
-
-- **auth**: Authenticate on connection
-- **state**: Full telemetry state snapshot (on connect)
-- **change**: Delta updates (field-level changes)
-- **event**: Critical events (battery critical, connectivity lost, etc.)
-- **keepalive**: Keepalive ping
-- **command_response**: Response to server command
-
-### Server → Client Messages
-
-- **auth_response**: Authentication result
-- **command**: Execute command on scooter
-- **keepalive**: Keepalive ping
-
-## Architecture
-
-```
-┌─────────────────────────────────────────┐
-│           Connection Manager            │
-│  (WebSocket, Auth, Reconnection Logic)  │
-└────────┬────────────────────────┬────────┘
-         │                        │
-    ┌────▼────────┐         ┌─────▼────────┐
-    │  Telemetry  │         │   Command    │
-    │   Monitor   │         │   Handler    │
-    │             │         │              │
-    │ 14 Hash     │         └──────────────┘
-    │ Watchers    │
-    └─────┬───────┘
-          │
-    ┌─────▼────────┐
-    │    Event     │
-    │  Detector    │
-    │              │
-    │ 10 Hash      │
-    │  Watchers    │
-    │  + Fault     │
-    │  Stream      │
-    └──────────────┘
-          │
-    ┌─────▼────────┐
-    │ Redis (IPC)  │
-    │ vehicle, gps │
-    │ battery, etc │
-    │ events:fault │
-    └──────────────┘
+```text
+/usr/bin/uplink-service -config /data/uplink-service/uplink.yaml
 ```
 
-**Components:**
-- **Monitor**: Watches 12 Redis hashes, debounces changes, sends delta updates to server
-- **EventDetector**: Watches 10 Redis hashes + fault stream for critical events
-  - Battery monitoring (traction + CB battery)
-  - Power state and NRF reset tracking
-  - GPS, connectivity, temperature monitoring
-  - Fault stream consumer (events:faults)
-  - Persistent buffering with exponential backoff retry
-- **CommandHandler**: Receives and executes commands via Redis IPC (state, hardware, power, etc.)
-- **HashWatcher**: redis-ipc abstraction for PUBSUB + HGET with automatic debouncing
+Runtime dependencies are a reachable WebSocket server, Redis/Valkey, vehicle services that consume the command queues, and optional NTP and modem information sources. The service updates `internet.unu-cloud` even while the cloud connection is unavailable.
 
-## Development
+## Operational and security notes
 
-### Project Structure
-
-```
-uplink-service/
-├── cmd/uplink-service/     # Main application
-├── internal/
-│   ├── config/             # Configuration
-│   ├── connection/         # Connection manager
-│   ├── telemetry/          # Monitor, EventDetector, Collector
-│   ├── commands/           # Command handler
-│   └── protocol/           # Message protocol
-├── configs/                # Example configurations
-├── librescoot-uplink.service  # Systemd service file
-└── bin/                    # Built binaries (not in git)
-```
-
-## Deployment
-
-A Yocto/BitBake recipe is available at:
-```
-meta-librescoot/recipes-core/uplink-service/uplink-service.bb
-```
-
-The service is deployed as a systemd unit (`librescoot-uplink.service`) and expects configuration at `/data/uplink.yml`.
+- The configuration file contains an authentication token. Keep `/data/uplink-service/uplink.yaml`, event queue, and telemetry buffer readable and writable only by trusted administrators and the service account; the shipped tmpfiles directory mode alone does not protect files created within it.
+- Use `wss://` for cloud endpoints. The client supports the configured URL directly and does not add transport security or certificate policy beyond the WebSocket/TLS stack.
+- Remote commands can control locks, power, horn, blinkers, and configuration. Keep the server, token issuance, Redis/Valkey access, and command configuration under strict administrative control. Leave `environment: production` and the `redis` debug command disabled unless there is a controlled maintenance need.
+- Offline event and telemetry buffers are persistent local records. Monitor available `/data` space and protect their contents as vehicle operational data.
+- A command response reports local dispatch success or failure; it does not prove that the downstream service completed the requested action.
 
 ## License
 
-This project is dual-licensed. The source code is available under the
-[GNU Affero General Public License v3.0][agpl-3.0].
-The maintainers reserve the right to grant separate licenses for commercial distribution; please contact the maintainers to discuss commercial licensing.
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
 
-[![AGPL v3][agpl-image]][agpl-3.0]
-
-[agpl-3.0]: https://www.gnu.org/licenses/agpl-3.0.en.html
-[agpl-image]: https://www.gnu.org/graphics/agplv3-88x31.png
+Made with ❤️ by the Librescoot community

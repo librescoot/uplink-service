@@ -10,8 +10,6 @@ import (
 	"github.com/librescoot/uplink-service/internal/modeminfo"
 )
 
-// collectedHashes are the Redis hashes read into a full telemetry snapshot.
-// All fields of each hash are passed through unchanged.
 var collectedHashes = []string{
 	"vehicle", "battery:0", "battery:1", "aux-battery", "cb-battery",
 	"engine-ecu", "power-manager", "power-mux", "internet", "modem", "gps",
@@ -19,8 +17,6 @@ var collectedHashes = []string{
 	"scooter",
 }
 
-// Collector reads comprehensive state from Redis and augments it with
-// process/hardware identity.
 type Collector struct {
 	client  *ipc.Client
 	version string
@@ -31,8 +27,6 @@ type Collector struct {
 	ctx         context.Context
 }
 
-// NewCollector creates a new telemetry collector. modem may be nil (identity
-// fields are then omitted).
 func NewCollector(client *ipc.Client, version string, cfg *config.Config, modem *modeminfo.Poller) *Collector {
 	return &Collector{
 		client:      client,
@@ -43,8 +37,6 @@ func NewCollector(client *ipc.Client, version string, cfg *config.Config, modem 
 	}
 }
 
-// CollectState reads all telemetry hashes from Redis and augments the snapshot
-// with modem identity, the board serial, and process metadata.
 func (c *Collector) CollectState(ctx context.Context) (map[string]any, error) {
 	c.ctx = ctx
 
@@ -57,10 +49,7 @@ func (c *Collector) CollectState(ctx context.Context) (map[string]any, error) {
 		}
 	}
 
-	// vehicle-service publishes the leaf hop-on states directly. Cloud
-	// consumers only know about the classic states, so collapse "hop-on" ->
-	// "stand-by" (locked) and "hop-on-learning" -> "parked". Mirrors the remap
-	// applied incrementally in Monitor.handleFieldChange.
+	// The cloud protocol does not recognize hop-on vehicle states.
 	if vehicle, ok := state["vehicle"].(map[string]any); ok {
 		if raw, hasState := vehicle["state"].(string); hasState {
 			vehicle["state"] = cloudifyVehicleState(raw)
@@ -72,9 +61,8 @@ func (c *Collector) CollectState(ctx context.Context) (map[string]any, error) {
 	return state, nil
 }
 
-// augment merges synthesized identity/metadata into a snapshot.
 func (c *Collector) augment(state map[string]any) {
-	// Modem identity fields merge into the existing "modem" hash.
+
 	if c.modem != nil {
 		if fields := c.modem.AsFields(); len(fields) > 0 {
 			modem, ok := state["modem"].(map[string]any)
@@ -88,7 +76,6 @@ func (c *Collector) augment(state map[string]any) {
 		}
 	}
 
-	// Board serial merges into "system".
 	if c.boardSerial != "" {
 		system, ok := state["system"].(map[string]any)
 		if !ok {
@@ -98,8 +85,6 @@ func (c *Collector) augment(state map[string]any) {
 		system["mdb-serial"] = c.boardSerial
 	}
 
-	// Process metadata. Deliberately curated (no secrets) rather than dumping
-	// the whole config, which now holds notification credentials.
 	meta := map[string]any{
 		"build-version": c.version,
 	}
@@ -110,7 +95,6 @@ func (c *Collector) augment(state map[string]any) {
 	state["meta"] = meta
 }
 
-// CollectKeyState reads state for a single Redis key
 func (c *Collector) CollectKeyState(ctx context.Context, keyName string) (map[string]any, error) {
 	keyData, err := c.collectKey(ctx, keyName)
 	if err != nil {
@@ -125,7 +109,6 @@ func (c *Collector) CollectKeyState(ctx context.Context, keyName string) (map[st
 	return state, nil
 }
 
-// collectKey reads a single Redis key, passing through all fields
 func (c *Collector) collectKey(ctx context.Context, keyName string) (map[string]any, error) {
 	data, err := c.client.HGetAll(keyName)
 	if err != nil {
@@ -139,8 +122,6 @@ func (c *Collector) collectKey(ctx context.Context, keyName string) (map[string]
 	return result, nil
 }
 
-// cloudifyVehicleState maps the hop-on family of states to their cloud-facing
-// equivalents. All other states pass through unchanged.
 func cloudifyVehicleState(raw string) string {
 	switch raw {
 	case "hop-on":

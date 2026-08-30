@@ -1,6 +1,3 @@
-// Package modeminfo collects static modem identity via ModemManager's mmcli.
-// It polls in the background so telemetry collection never blocks on a shell
-// out, and degrades to empty values when mmcli or a modem is unavailable.
 package modeminfo
 
 import (
@@ -12,7 +9,6 @@ import (
 	"time"
 )
 
-// Info holds the slowly-changing modem identity fields.
 type Info struct {
 	Manufacturer string
 	Model        string
@@ -22,15 +18,12 @@ type Info struct {
 	HardwareRev  string
 }
 
-// Poller periodically refreshes modem identity.
 type Poller struct {
 	mu       sync.RWMutex
 	info     Info
 	interval time.Duration
 }
 
-// NewPoller creates a poller with the given refresh interval (defaulting to a
-// few minutes when zero, since identity rarely changes).
 func NewPoller(interval time.Duration) *Poller {
 	if interval <= 0 {
 		interval = 5 * time.Minute
@@ -38,15 +31,12 @@ func NewPoller(interval time.Duration) *Poller {
 	return &Poller{interval: interval}
 }
 
-// Get returns the most recently observed modem identity.
 func (p *Poller) Get() Info {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.info
 }
 
-// AsFields returns the identity as a map suitable for merging into telemetry,
-// omitting empty values.
 func (p *Poller) AsFields() map[string]string {
 	info := p.Get()
 	out := map[string]string{}
@@ -64,8 +54,6 @@ func (p *Poller) AsFields() map[string]string {
 	return out
 }
 
-// Start refreshes once immediately, then on the configured interval until the
-// context is cancelled.
 func (p *Poller) Start(ctx context.Context) {
 	p.refresh()
 	ticker := time.NewTicker(p.interval)
@@ -90,7 +78,6 @@ func (p *Poller) refresh() {
 	p.mu.Unlock()
 }
 
-// mmcliModem mirrors the subset of `mmcli -J -m any` output we consume.
 type mmcliModem struct {
 	Modem struct {
 		Generic struct {
@@ -107,6 +94,7 @@ type mmcliModem struct {
 	} `json:"modem"`
 }
 
+// mmcli may be absent off-target; modem identity is optional telemetry.
 func queryModem() (Info, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

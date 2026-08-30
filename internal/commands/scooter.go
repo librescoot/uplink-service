@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// paramFloat coerces a command parameter to float64, falling back to def.
 func paramFloat(v any, def float64) float64 {
 	if f, ok := v.(float64); ok {
 		return f
@@ -14,9 +13,6 @@ func paramFloat(v any, def float64) float64 {
 	return def
 }
 
-// locate flashes the hazards and emits a short honk pattern so a nearby user
-// can find the scooter. The timed sequence runs in a goroutine so it does not
-// block the (single-consumer) command loop.
 func (h *Handler) locate() error {
 	honk := time.Duration(paramFloat(h.cfg.CommandParam("locate", "honk_time", 40), def40)) * time.Millisecond
 	gap := time.Duration(paramFloat(h.cfg.CommandParam("locate", "honk_interval", 80), def80)) * time.Millisecond
@@ -45,7 +41,6 @@ func (h *Handler) locate() error {
 	return nil
 }
 
-// beep pulses the horn for d. Returns false if the context was cancelled.
 func (h *Handler) beep(d time.Duration) bool {
 	if err := h.sendCommand("scooter:horn", "on"); err != nil {
 		return false
@@ -55,8 +50,6 @@ func (h *Handler) beep(d time.Duration) bool {
 	return ok
 }
 
-// alarmPulse runs an active alarm: hazards on plus a repeating horn pulse for a
-// duration. A params.state of "off" stops any running alarm.
 func (h *Handler) alarmPulse(params map[string]any) error {
 	if state, _ := params["state"].(string); state == "off" {
 		h.stopAlarm()
@@ -101,8 +94,6 @@ func (h *Handler) alarmPulse(params map[string]any) error {
 	return nil
 }
 
-// startAlarm installs a new alarm cancel func, cancelling any previous alarm,
-// and returns a generation token identifying this alarm.
 func (h *Handler) startAlarm(cancel context.CancelFunc) int {
 	h.alarmMu.Lock()
 	prev := h.alarmCancel
@@ -116,7 +107,6 @@ func (h *Handler) startAlarm(cancel context.CancelFunc) int {
 	return gen
 }
 
-// clearAlarm clears the stored cancel func only if it still belongs to gen.
 func (h *Handler) clearAlarm(gen int) {
 	h.alarmMu.Lock()
 	if h.alarmGen == gen {
@@ -135,7 +125,6 @@ func (h *Handler) stopAlarm() {
 	}
 }
 
-// navigate sets or clears the navigation destination. An empty payload clears.
 func (h *Handler) navigate(params map[string]any) error {
 	lat, hasLat := params["latitude"]
 	lng, hasLng := params["longitude"]
@@ -172,8 +161,7 @@ func (h *Handler) navigate(params map[string]any) error {
 	return nil
 }
 
-// redisCommand exposes a small set of Redis operations for debugging. It is
-// disabled by default and only reachable when explicitly enabled in config.
+// This diagnostic escape hatch is gated by command configuration.
 func (h *Handler) redisCommand(params map[string]any) (map[string]any, error) {
 	op, _ := params["command"].(string)
 	args := toStringSlice(params["args"])
@@ -246,7 +234,6 @@ func toStringSlice(v any) []string {
 	return out
 }
 
-// sleepOrDone waits for d or the handler context, returning false if cancelled.
 func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	select {
 	case <-time.After(d):
@@ -256,7 +243,6 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// sleepOrCtx waits for d, the context, or the deadline timer firing.
 func sleepOrCtx(ctx context.Context, deadline *time.Timer, d time.Duration) bool {
 	t := time.NewTimer(d)
 	defer t.Stop()
@@ -266,12 +252,11 @@ func sleepOrCtx(ctx context.Context, deadline *time.Timer, d time.Duration) bool
 	case <-ctx.Done():
 		return false
 	case <-deadline.C:
-		// Deadline reached mid-pulse; stop.
+
 		return false
 	}
 }
 
-// Default parameter values for composite commands (milliseconds).
 const (
 	def40    = 40
 	def80    = 80

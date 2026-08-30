@@ -13,10 +13,9 @@ func TestDiffFlat(t *testing.T) {
 		"gps.latitude":      "52.5",
 	}
 	current := map[string]string{
-		"battery:0.charge":  "65",    // changed
-		"battery:0.voltage": "54000", // unchanged
-		"vehicle.state":     "parked", // added
-		// gps.latitude removed
+		"battery:0.charge":  "65",
+		"battery:0.voltage": "54000",
+		"vehicle.state":     "parked",
 	}
 
 	changed, removed := diffFlat(old, current)
@@ -50,14 +49,14 @@ func TestFlattenNestRoundTrip(t *testing.T) {
 }
 
 func TestQuantize(t *testing.T) {
-	// battery voltage bucketed to 100
+
 	if got := quantize("battery:0[voltage]", "54049"); got != "54000" {
 		t.Errorf("quantize 54049 = %s, want 54000", got)
 	}
 	if got := quantize("battery:0[voltage]", "54051"); got != "54100" {
 		t.Errorf("quantize 54051 = %s, want 54100", got)
 	}
-	// non-bucketed field passes through
+
 	if got := quantize("vehicle[state]", "parked"); got != "parked" {
 		t.Errorf("quantize passthrough = %s, want parked", got)
 	}
@@ -65,14 +64,13 @@ func TestQuantize(t *testing.T) {
 
 func TestSmoothParkedGPSHoldsJitter(t *testing.T) {
 	p := &Publisher{}
-	// First parked sample establishes the anchor.
+
 	snap1 := map[string]any{
 		"vehicle": map[string]any{"state": "parked"},
 		"gps":     map[string]any{"latitude": "52.500000", "longitude": "13.400000"},
 	}
 	p.smoothParkedGPS(snap1)
 
-	// A tiny jitter (<5m) must be held to the anchor position.
 	snap2 := map[string]any{
 		"vehicle": map[string]any{"state": "parked"},
 		"gps":     map[string]any{"latitude": "52.500010", "longitude": "13.400010"},
@@ -80,7 +78,7 @@ func TestSmoothParkedGPSHoldsJitter(t *testing.T) {
 	p.smoothParkedGPS(snap2)
 	gps := snap2["gps"].(map[string]any)
 	if gps["latitude"] != "52.5" && gps["latitude"] != "52.500000" {
-		// held to anchor -> formatFloat(52.5) == "52.5"
+
 		t.Errorf("expected held latitude near anchor, got %v", gps["latitude"])
 	}
 }
@@ -91,14 +89,14 @@ func TestSmoothParkedGPSReleasesRealMove(t *testing.T) {
 		"vehicle": map[string]any{"state": "parked"},
 		"gps":     map[string]any{"latitude": "52.500000", "longitude": "13.400000"},
 	})
-	// ~1km move must be reported (roughly 0.01 deg lat).
+
 	snap := map[string]any{
 		"vehicle": map[string]any{"state": "parked"},
 		"gps":     map[string]any{"latitude": "52.510000", "longitude": "13.400000"},
 	}
 	p.smoothParkedGPS(snap)
 	gps := snap["gps"].(map[string]any)
-	// A real move leaves the snapshot's own value untouched (not held).
+
 	if gps["latitude"] != "52.510000" {
 		t.Errorf("expected moved latitude reported unchanged, got %v", gps["latitude"])
 	}

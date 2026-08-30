@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// Keycard UID storage locations, tried in order. The first existing parent
-// directory wins; otherwise the LibreScoot path is used.
 var keycardDirs = []string{"/data/keycard", "/etc/reunu-keycard"}
 
 const (
@@ -71,7 +69,7 @@ func (h *Handler) keycardsAdd(params map[string]any) error {
 	}
 	for _, u := range uids {
 		if u == uid {
-			return nil // already present
+			return nil
 		}
 	}
 	return writeUIDs(path, append(uids, uid))
