@@ -24,6 +24,39 @@ import (
 
 var version = "dev"
 
+const remoteAccessUpdateScript = `
+local oldField = redis.call('HGET', KEYS[1], ARGV[1])
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+local fields = redis.call('HGETALL', KEYS[1])
+local aggregate = 'disconnected'
+for i = 1, #fields, 2 do
+  if fields[i] ~= 'status' and fields[i + 1] == 'connected' then
+    aggregate = 'connected'
+    break
+  end
+end
+local oldAggregate = redis.call('HGET', KEYS[1], 'status')
+redis.call('HSET', KEYS[1], 'status', aggregate)
+if oldField ~= ARGV[2] then redis.call('PUBLISH', KEYS[1], ARGV[1]) end
+if oldAggregate ~= aggregate then redis.call('PUBLISH', KEYS[1], 'status') end
+return aggregate
+`
+
+func writeCloudStatus(client *ipc.Client, internetHash *ipc.HashPublisher, connected bool) {
+	status := "disconnected"
+	if connected {
+		status = "connected"
+	}
+	if _, err := client.Do("EVAL", remoteAccessUpdateScript, 1, "remote-access", "uplink-service", status); err != nil {
+		log.Printf("[Main] Failed to update remote-access:uplink-service: %v", err)
+	}
+	// Keep the legacy dashboard and fleet telemetry field until their consumers
+	// migrate to remote-access. It remains diagnostic only.
+	if err := internetHash.Set("unu-cloud", status); err != nil {
+		log.Printf("[Main] Failed to update internet:unu-cloud: %v", err)
+	}
+}
+
 func main() {
 	configPath := flag.String("config", "/data/uplink-service/uplink.yaml", "Path to configuration file")
 	showVersion := flag.Bool("version", false, "Print version and exit")
@@ -76,17 +109,8 @@ func main() {
 	}
 
 	internetHash := client.Hash("internet")
-	writeCloudStatus := func(connected bool) {
-		status := "disconnected"
-		if connected {
-			status = "connected"
-		}
-		if err := internetHash.Set("unu-cloud", status); err != nil {
-			log.Printf("[Main] Failed to update internet:unu-cloud: %v", err)
-		}
-	}
 
-	writeCloudStatus(false)
+	writeCloudStatus(client, internetHash, false)
 
 	clock := timeutil.NewClock()
 	startClockSync(ctx, cfg, clock)
@@ -105,7 +129,7 @@ func main() {
 	monitor.SetFlusher(publisher)
 
 	connMgr.StatusCallback = func(connected bool) {
-		writeCloudStatus(connected)
+		writeCloudStatus(client, internetHash, connected)
 		if !connected {
 			publisher.ResetBaseline()
 		}
@@ -168,7 +192,7 @@ func main() {
 
 	log.Println("\nShutting down gracefully...")
 	cancel()
-	writeCloudStatus(false)
+	writeCloudStatus(client, internetHash, false)
 
 	time.Sleep(1 * time.Second)
 	log.Println("Stopped.")
