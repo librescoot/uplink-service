@@ -2,7 +2,10 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -130,9 +133,19 @@ func (h *Handler) navigate(params map[string]any) error {
 	lng, hasLng := params["longitude"]
 	addr, _ := params["address"].(string)
 
-	if !hasLat && !hasLng && addr == "" {
-		if _, err := h.client.Raw().HDel(h.ctx, "navigation", "latitude", "longitude", "address", "timestamp").Result(); err != nil {
-			return fmt.Errorf("clear navigation: %w", err)
+	// A multi-hop plan supersedes a single destination. The dashboard reads
+	// latitude/longitude as the current target, so the first stop is also
+	// written there, and waypoints/current-step carry the ordered list.
+	waypointsJSON, firstLat, firstLng, firstLabel, hasWaypoints := buildWaypoints(params)
+
+	if !hasLat && !hasLng && addr == "" && !hasWaypoints {
+		// Clear by setting empty strings rather than HDEL: hash watchers do not
+		// see a delete, so subscribers would only notice on the next poll.
+		for _, field := range []string{"latitude", "longitude", "address", "timestamp",
+			"destination", "waypoints", "current-step"} {
+			if err := h.client.HSet("navigation", field, ""); err != nil {
+				return fmt.Errorf("clear navigation %s: %w", field, err)
+			}
 		}
 		_, _ = h.client.Publish("navigation", "cleared")
 		return nil
@@ -141,24 +154,118 @@ func (h *Handler) navigate(params map[string]any) error {
 	set := func(field string, value any) error {
 		return h.client.HSet("navigation", field, fmt.Sprint(value))
 	}
-	if hasLat {
-		if err := set("latitude", lat); err != nil {
+
+	if hasWaypoints {
+		if err := set("waypoints", waypointsJSON); err != nil {
 			return err
 		}
-	}
-	if hasLng {
-		if err := set("longitude", lng); err != nil {
+		if err := set("current-step", 0); err != nil {
 			return err
 		}
-	}
-	if addr != "" {
-		if err := set("address", addr); err != nil {
+		if err := set("latitude", firstLat); err != nil {
 			return err
 		}
+		if err := set("longitude", firstLng); err != nil {
+			return err
+		}
+		if err := set("destination", fmt.Sprintf("%.6f,%.6f", firstLat, firstLng)); err != nil {
+			return err
+		}
+		if firstLabel != "" {
+			_ = set("address", firstLabel)
+		}
+	} else {
+		if hasLat {
+			if err := set("latitude", lat); err != nil {
+				return err
+			}
+		}
+		if hasLng {
+			if err := set("longitude", lng); err != nil {
+				return err
+			}
+		}
+		if addr != "" {
+			if err := set("address", addr); err != nil {
+				return err
+			}
+		}
+		// A single destination replaces any plan. Empty strings, so the store
+		// notices.
+		_ = set("waypoints", "")
+		_ = set("current-step", "")
 	}
 	_ = set("timestamp", time.Now().UTC().Format(time.RFC3339))
 	_, _ = h.client.Publish("navigation", "updated")
 	return nil
+}
+
+// buildWaypoints reads an optional ordered stop list from a navigate command.
+// Each stop accepts latitude/longitude or lat/lon (number or numeric string)
+// with an optional label or name. It returns the JSON the dashboard's
+// navigation hash expects, plus the first stop's fields so the caller can also
+// publish it as the current target.
+func buildWaypoints(params map[string]any) (string, float64, float64, string, bool) {
+	raw, present := params["waypoints"]
+	if !present {
+		return "", 0, 0, "", false
+	}
+	list, isList := raw.([]any)
+	if !isList || len(list) == 0 {
+		return "", 0, 0, "", false
+	}
+
+	type stop struct {
+		Lat   float64 `json:"lat"`
+		Lon   float64 `json:"lon"`
+		Label string  `json:"label,omitempty"`
+	}
+	stops := make([]stop, 0, len(list))
+	for _, entry := range list {
+		m, isMap := entry.(map[string]any)
+		if !isMap {
+			continue
+		}
+		la, okLat := firstNumber(m, "latitude", "lat")
+		lo, okLon := firstNumber(m, "longitude", "lon")
+		if !okLat || !okLon {
+			continue
+		}
+		label, _ := m["label"].(string)
+		if label == "" {
+			label, _ = m["name"].(string)
+		}
+		stops = append(stops, stop{Lat: la, Lon: lo, Label: label})
+	}
+	if len(stops) == 0 {
+		return "", 0, 0, "", false
+	}
+
+	encoded, err := json.Marshal(stops)
+	if err != nil {
+		return "", 0, 0, "", false
+	}
+	return string(encoded), stops[0].Lat, stops[0].Lon, stops[0].Label, true
+}
+
+func firstNumber(m map[string]any, keys ...string) (float64, bool) {
+	for _, key := range keys {
+		switch v := m[key].(type) {
+		case float64:
+			return v, true
+		case int:
+			return float64(v), true
+		case json.Number:
+			if f, err := v.Float64(); err == nil {
+				return f, true
+			}
+		case string:
+			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+				return f, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // This diagnostic escape hatch is gated by command configuration.
