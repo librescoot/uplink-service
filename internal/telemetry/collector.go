@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"strings"
 
 	ipc "github.com/librescoot/redis-ipc"
 
@@ -10,14 +11,38 @@ import (
 	"github.com/librescoot/uplink-service/internal/modeminfo"
 )
 
-// The settings hash is deliberately absent: it carries secrets such as
-// cellular.sim-pin and must not leave the vehicle.
+// settings is collected but filtered through settingsFieldAllowed: the hash
+// also carries credentials (cellular.sim-pin, cellular.password) and saved
+// locations that must not leave the vehicle.
 var collectedHashes = []string{
 	"vehicle", "battery:0", "battery:1", "aux-battery", "cb-battery",
 	"engine-ecu", "power-manager", "power-manager:busy-services", "power-mux",
 	"internet", "modem", "gps", "keycard", "ble", "dashboard", "system",
 	"version:mdb", "version:dbc", "ota", "alarm", "navigation", "scooter",
-	"trip", "trip:counter", "usb", "remote-access",
+	"trip", "trip:counter", "usb", "remote-access", "settings",
+}
+
+// Settings allowed off-vehicle, by key prefix or exact key. Anything not
+// matching stays on the scooter, so new secret keys cannot leak by omission.
+var settingsAllowedPrefixes = []string{
+	"updates.", "pm.", "alarm.", "trip.", "engine-ecu.",
+}
+var settingsAllowedExact = map[string]bool{
+	"dashboard.service-mode-active": true,
+	"scooter.developer-mode":        true,
+	"scooter.dual-battery":          true,
+}
+
+func settingsFieldAllowed(field string) bool {
+	if settingsAllowedExact[field] {
+		return true
+	}
+	for _, prefix := range settingsAllowedPrefixes {
+		if strings.HasPrefix(field, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 type Collector struct {
@@ -47,6 +72,13 @@ func (c *Collector) CollectState(ctx context.Context) (map[string]any, error) {
 
 	for _, key := range collectedHashes {
 		keyState, _ := c.collectKey(ctx, key)
+		if key == "settings" {
+			for field := range keyState {
+				if !settingsFieldAllowed(field) {
+					delete(keyState, field)
+				}
+			}
+		}
 		if len(keyState) > 0 {
 			state[key] = keyState
 		}

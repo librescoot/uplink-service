@@ -25,10 +25,10 @@ The service uses `redis_url` (default `localhost:6379`) and collects state from 
 vehicle, battery:0, battery:1, aux-battery, cb-battery, engine-ecu,
 power-manager, power-manager:busy-services, power-mux, internet, modem, gps,
 keycard, ble, dashboard, system, version:mdb, version:dbc, ota, alarm,
-navigation, scooter, trip, trip:counter, usb, remote-access
+navigation, scooter, trip, trip:counter, usb, remote-access, settings
 ```
 
-The `settings` hash is deliberately not collected: it carries secrets such as `cellular.sim-pin`.
+`settings` is filtered through an allowlist before it leaves the scooter: only `updates.*`, `pm.*`, `alarm.*`, `trip.*`, `engine-ecu.*`, `dashboard.service-mode-active`, `scooter.developer-mode`, and `scooter.dual-battery` are collected. Credentials (`cellular.sim-pin`, `cellular.password`) and saved/recent locations never leave the vehicle; anything the schema gains later stays on it too unless explicitly allowed.
 
 It watches a subset for telemetry changes and event detection. On startup and connection it writes `remote-access.uplink-service=disconnected` or `connected` (and mirrors the legacy `internet.unu-cloud` field) to show WebSocket authentication status. The collector adds `meta.build-version`, `meta.environment`, and `meta.identifier`; it also adds an MDB board serial and modem fields when available. Vehicle states `hop-on` and `hop-on-learning` are translated to `stand-by` and `parked` respectively in cloud telemetry.
 
