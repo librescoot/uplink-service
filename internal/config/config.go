@@ -29,7 +29,6 @@ type Config struct {
 
 type UplinkConfig struct {
 	ServerURL         string `yaml:"server_url"`
-	FallbackURL       string `yaml:"fallback_url,omitempty"`
 	KeepaliveInterval string `yaml:"keepalive_interval"`
 	ReconnectMaxDelay string `yaml:"reconnect_max_delay"`
 }
