@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/beevik/ntp v1.5.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/librescoot/redis-ipc v0.10.3
+	github.com/librescoot/redis-ipc v0.15.3
 	gopkg.in/yaml.v2 v2.4.0
 )
 
