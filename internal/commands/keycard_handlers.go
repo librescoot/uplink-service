@@ -44,7 +44,8 @@ func (h *Handler) startKeycardWatcher(ctx context.Context) {
 func (h *Handler) handleKeycardResult(result string) error {
 	code, err := h.client.Hash(keycardHash).Get("command-error")
 	if err != nil {
-		return fmt.Errorf("read keycard command error: %w", err)
+		h.deliverKeycardResult(keycardCommandResult{err: fmt.Errorf("read keycard command error: %w", err)})
+		return nil
 	}
 	h.deliverKeycardResult(keycardCommandResult{result: result, code: code})
 	return nil
@@ -53,14 +54,12 @@ func (h *Handler) handleKeycardResult(result string) error {
 func (h *Handler) deliverKeycardResult(result keycardCommandResult) {
 	h.keycardResultMu.Lock()
 	response := h.keycardResult
+	h.keycardResult = nil
 	h.keycardResultMu.Unlock()
 	if response == nil {
 		return
 	}
-	select {
-	case response <- result:
-	default:
-	}
+	response <- result
 }
 
 func (h *Handler) keycardCommand(ctx context.Context, command string) error {
@@ -72,9 +71,17 @@ func (h *Handler) keycardCommand(ctx context.Context, command string) error {
 	}
 	response := make(chan keycardCommandResult, 1)
 	h.keycardResultMu.Lock()
+	if h.keycardResult != nil {
+		h.keycardResultMu.Unlock()
+		return fmt.Errorf("previous keycard command is still awaiting a response")
+	}
 	h.keycardResult = response
 	h.keycardResultMu.Unlock()
+	clearResponse := true
 	defer func() {
+		if !clearResponse {
+			return
+		}
 		h.keycardResultMu.Lock()
 		if h.keycardResult == response {
 			h.keycardResult = nil
@@ -86,7 +93,7 @@ func (h *Handler) keycardCommand(ctx context.Context, command string) error {
 		return fmt.Errorf("send keycard command: %w", err)
 	}
 
-	timer := time.NewTimer(keycardCommandTimeout)
+	timer := time.NewTimer(h.keycardCommandTimeout())
 	defer timer.Stop()
 	select {
 	case result := <-response:
@@ -95,10 +102,19 @@ func (h *Handler) keycardCommand(ctx context.Context, command string) error {
 		}
 		return keycardCommandError(result)
 	case <-timer.C:
+		clearResponse = false
 		return fmt.Errorf("timed out waiting for keycard command response")
 	case <-ctx.Done():
+		clearResponse = false
 		return ctx.Err()
 	}
+}
+
+func (h *Handler) keycardCommandTimeout() time.Duration {
+	if h.keycardTimeout > 0 {
+		return h.keycardTimeout
+	}
+	return keycardCommandTimeout
 }
 
 func (h *Handler) sendKeycardCommand(command string) error {

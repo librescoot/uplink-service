@@ -25,6 +25,52 @@ func TestKeycardCommandError(t *testing.T) {
 	}
 }
 
+func TestKeycardCommandWaitsForTimedOutRequestToDrain(t *testing.T) {
+	var sent atomic.Int32
+	h := &Handler{
+		keycardWatcher: &ipc.HashWatcher{},
+		keycardTimeout: 10 * time.Millisecond,
+	}
+	h.keycardSend = func(command string) error {
+		sent.Add(1)
+		return nil
+	}
+
+	if err := h.keycardCommand(context.Background(), "add:00112233"); err == nil {
+		t.Fatal("first command did not time out")
+	}
+	if err := h.keycardCommand(context.Background(), "remove:00112233"); err == nil {
+		t.Fatal("second command was sent before the first response arrived")
+	}
+	if sent.Load() != 1 {
+		t.Errorf("sent %d commands, want 1", sent.Load())
+	}
+
+	h.deliverKeycardResult(keycardCommandResult{result: "ok"})
+	h.keycardSend = func(command string) error {
+		sent.Add(1)
+		go h.deliverKeycardResult(keycardCommandResult{result: "ok"})
+		return nil
+	}
+	if err := h.keycardCommand(context.Background(), "remove:00112233"); err != nil {
+		t.Fatalf("command after response drain: %v", err)
+	}
+	if sent.Load() != 2 {
+		t.Errorf("sent %d commands, want 2", sent.Load())
+	}
+}
+
+func TestKeycardCommandReturnsWatcherError(t *testing.T) {
+	h := &Handler{keycardWatcher: &ipc.HashWatcher{}}
+	h.keycardSend = func(command string) error {
+		go h.deliverKeycardResult(keycardCommandResult{err: context.DeadlineExceeded})
+		return nil
+	}
+	if err := h.keycardCommand(context.Background(), "add:00112233"); err != context.DeadlineExceeded {
+		t.Fatalf("keycard command error = %v, want %v", err, context.DeadlineExceeded)
+	}
+}
+
 func TestKeycardCommandsAreSerialized(t *testing.T) {
 	var active atomic.Int32
 	var maximum atomic.Int32

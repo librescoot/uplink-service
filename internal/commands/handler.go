@@ -34,6 +34,7 @@ type Handler struct {
 	keycardResult   chan keycardCommandResult
 	keycardWatcher  *ipc.HashWatcher
 	keycardSend     func(string) error
+	keycardTimeout  time.Duration
 }
 
 func NewHandler(connMgr *connection.Manager, client *ipc.Client, collector StateCollector, cfg *config.Config) *Handler {
