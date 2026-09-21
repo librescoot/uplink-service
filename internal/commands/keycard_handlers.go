@@ -1,59 +1,129 @@
 package commands
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"path/filepath"
+	"log"
 	"sort"
 	"strings"
-)
+	"time"
 
-var keycardDirs = []string{"/data/keycard", "/etc/reunu-keycard"}
+	ipc "github.com/librescoot/redis-ipc"
+)
 
 const (
-	authorizedFile = "authorized_uids.txt"
-	masterFile     = "master_uids.txt"
+	keycardCommandQueue   = "scooter:keycard"
+	keycardHash           = "keycard"
+	keycardAuthorizedSet  = "keycard:authorized"
+	keycardMastersSet     = "keycard:masters"
+	keycardCommandTimeout = 5 * time.Second
 )
 
-func keycardPath(file string) string {
-	for _, dir := range keycardDirs {
-		if _, err := os.Stat(dir); err == nil {
-			return filepath.Join(dir, file)
-		}
-	}
-	return filepath.Join(keycardDirs[0], file)
+type keycardCommandResult struct {
+	result string
+	code   string
+	err    error
 }
 
-func readUIDs(path string) ([]string, error) {
-	data, err := os.ReadFile(path)
+func (h *Handler) startKeycardWatcher(ctx context.Context) {
+	watcher := h.client.NewHashWatcher(keycardHash)
+	watcher.OnField("command-result", h.handleKeycardResult)
+	if err := watcher.Start(); err != nil {
+		log.Printf("[CommandHandler] Failed to watch keycard results: %v", err)
+		return
+	}
+	h.keycardWatcher = watcher
+	go func() {
+		<-ctx.Done()
+		if err := watcher.Stop(); err != nil {
+			log.Printf("[CommandHandler] Failed to stop keycard result watcher: %v", err)
+		}
+	}()
+}
+
+func (h *Handler) handleKeycardResult(result string) error {
+	code, err := h.client.Hash(keycardHash).Get("command-error")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
+		return fmt.Errorf("read keycard command error: %w", err)
 	}
-	var uids []string
-	for _, line := range strings.Split(string(data), "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			uids = append(uids, s)
-		}
-	}
-	return uids, nil
+	h.deliverKeycardResult(keycardCommandResult{result: result, code: code})
+	return nil
 }
 
-func writeUIDs(path string, uids []string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+func (h *Handler) deliverKeycardResult(result keycardCommandResult) {
+	h.keycardResultMu.Lock()
+	response := h.keycardResult
+	h.keycardResultMu.Unlock()
+	if response == nil {
+		return
 	}
-	sort.Strings(uids)
-	return os.WriteFile(path, []byte(strings.Join(uids, "\n")+"\n"), 0o600)
+	select {
+	case response <- result:
+	default:
+	}
+}
+
+func (h *Handler) keycardCommand(ctx context.Context, command string) error {
+	h.keycardMu.Lock()
+	defer h.keycardMu.Unlock()
+
+	if h.keycardWatcher == nil {
+		return fmt.Errorf("keycard result watcher is unavailable")
+	}
+	response := make(chan keycardCommandResult, 1)
+	h.keycardResultMu.Lock()
+	h.keycardResult = response
+	h.keycardResultMu.Unlock()
+	defer func() {
+		h.keycardResultMu.Lock()
+		if h.keycardResult == response {
+			h.keycardResult = nil
+		}
+		h.keycardResultMu.Unlock()
+	}()
+
+	if err := h.sendKeycardCommand(command); err != nil {
+		return fmt.Errorf("send keycard command: %w", err)
+	}
+
+	timer := time.NewTimer(keycardCommandTimeout)
+	defer timer.Stop()
+	select {
+	case result := <-response:
+		if result.err != nil {
+			return result.err
+		}
+		return keycardCommandError(result)
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for keycard command response")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *Handler) sendKeycardCommand(command string) error {
+	if h.keycardSend != nil {
+		return h.keycardSend(command)
+	}
+	return ipc.SendRequest(h.client, keycardCommandQueue, command)
+}
+
+func keycardCommandError(result keycardCommandResult) error {
+	if result.code != "" {
+		return fmt.Errorf("keycard command failed: %s", result.result)
+	}
+	if result.result != "ok" {
+		return fmt.Errorf("unexpected keycard command response: %s", result.result)
+	}
+	return nil
 }
 
 func (h *Handler) keycardsList() (map[string]any, error) {
-	uids, err := readUIDs(keycardPath(authorizedFile))
+	uids, err := h.client.Raw().SMembers(context.Background(), keycardAuthorizedSet).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read authorized keycards: %w", err)
 	}
+	sort.Strings(uids)
 	return map[string]any{"uids": uids}, nil
 }
 
@@ -62,17 +132,7 @@ func (h *Handler) keycardsAdd(params map[string]any) error {
 	if uid == "" {
 		return fmt.Errorf("uid is required")
 	}
-	path := keycardPath(authorizedFile)
-	uids, err := readUIDs(path)
-	if err != nil {
-		return err
-	}
-	for _, u := range uids {
-		if u == uid {
-			return nil
-		}
-	}
-	return writeUIDs(path, append(uids, uid))
+	return h.keycardCommand(h.commandContext(), "add:"+uid)
 }
 
 func (h *Handler) keycardsDelete(params map[string]any) error {
@@ -80,36 +140,33 @@ func (h *Handler) keycardsDelete(params map[string]any) error {
 	if uid == "" {
 		return fmt.Errorf("uid is required")
 	}
-	path := keycardPath(authorizedFile)
-	uids, err := readUIDs(path)
-	if err != nil {
-		return err
-	}
-	out := uids[:0]
-	for _, u := range uids {
-		if u != uid {
-			out = append(out, u)
-		}
-	}
-	return writeUIDs(path, out)
+	return h.keycardCommand(h.commandContext(), "remove:"+uid)
 }
 
 func (h *Handler) keycardMasterGet() (map[string]any, error) {
-	uids, err := readUIDs(keycardPath(masterFile))
+	masters, err := h.client.Raw().SMembers(context.Background(), keycardMastersSet).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read master keycards: %w", err)
 	}
-	var master string
-	if len(uids) > 0 {
-		master = uids[0]
+	sort.Strings(masters)
+	master := ""
+	if len(masters) > 0 {
+		master = masters[0]
 	}
 	return map[string]any{"master": master}, nil
 }
 
 func (h *Handler) keycardMasterSet(params map[string]any) error {
 	uid, _ := params["uid"].(string)
-	if uid == "" {
+	if strings.TrimSpace(uid) == "" {
 		return fmt.Errorf("uid is required")
 	}
-	return writeUIDs(keycardPath(masterFile), []string{uid})
+	return h.keycardCommand(h.commandContext(), "set-master:"+uid)
+}
+
+func (h *Handler) commandContext() context.Context {
+	if h.ctx != nil {
+		return h.ctx
+	}
+	return context.Background()
 }

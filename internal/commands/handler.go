@@ -28,6 +28,12 @@ type Handler struct {
 	alarmMu     sync.Mutex
 	alarmCancel context.CancelFunc
 	alarmGen    int
+
+	keycardMu       sync.Mutex
+	keycardResultMu sync.Mutex
+	keycardResult   chan keycardCommandResult
+	keycardWatcher  *ipc.HashWatcher
+	keycardSend     func(string) error
 }
 
 func NewHandler(connMgr *connection.Manager, client *ipc.Client, collector StateCollector, cfg *config.Config) *Handler {
@@ -41,6 +47,7 @@ func NewHandler(connMgr *connection.Manager, client *ipc.Client, collector State
 
 func (h *Handler) Start(ctx context.Context) {
 	h.ctx = ctx
+	h.startKeycardWatcher(ctx)
 	log.Println("[CommandHandler] Starting...")
 	go h.handleLoop()
 	go h.handleConfigUpdates()
