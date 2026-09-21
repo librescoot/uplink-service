@@ -130,7 +130,7 @@ func splitPath(path string) []string {
 
 func resolvePath(v reflect.Value, segs []string) (reflect.Value, error) {
 	for i, seg := range segs {
-		for v.Kind() == reflect.Ptr {
+		for v.Kind() == reflect.Pointer {
 			if v.IsNil() {
 				return reflect.Value{}, fmt.Errorf("nil pointer before %q", seg)
 			}
@@ -205,7 +205,7 @@ func assignScalar(v reflect.Value, s string) error {
 			return err
 		}
 		v.SetFloat(f)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		nv := reflect.New(v.Type().Elem())
 		if err := assignScalar(nv.Elem(), s); err != nil {
 			return err
