@@ -168,6 +168,10 @@ func (h *Handler) dispatch(cmd *protocol.CommandMessage) (map[string]any, error)
 
 	case "locate":
 		return nil, h.locate()
+	case "trip_reset":
+		return h.tripReset()
+	case "update_check":
+		return h.updateCheck(cmd.Params)
 	case "alarm":
 		return nil, h.alarmPulse(cmd.Params)
 	case "navigate":

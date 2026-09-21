@@ -11,8 +11,8 @@ Part of the [Librescoot](https://librescoot.org/) open-source platform.
 - Authenticated WebSocket connection with 1-second exponential reconnect backoff capped by configuration and configurable keepalives.
 - Initial full state and subsequent priority/debounced telemetry updates from vehicle Redis/Valkey hashes.
 - Persistent telemetry buffering and line-oriented event buffering for offline operation.
-- Event reporting for battery, power, connectivity, locks, GPS, temperature, OTA, alarm, and Redis Stream fault changes.
-- Server-issued commands for vehicle control, diagnostics, configuration, keycards, and service restart, subject to configuration and environment checks.
+- Event reporting for battery, power, connectivity, locks, GPS, temperature, OTA errors, alarm, USB mode changes, and Redis Stream fault changes.
+- Server-issued commands for vehicle control, navigation, diagnostics, configuration, keycards, trip counters, update checks, and service restart, subject to configuration and environment checks.
 - NTP clock synchronization and modem metadata collection.
 
 ## Operation and interfaces
@@ -23,11 +23,14 @@ The service uses `redis_url` (default `localhost:6379`) and collects state from 
 
 ```text
 vehicle, battery:0, battery:1, aux-battery, cb-battery, engine-ecu,
-power-manager, power-mux, internet, modem, gps, keycard, ble, dashboard,
-system, version:mdb, version:dbc, ota, alarm, navigation, scooter
+power-manager, power-manager:busy-services, power-mux, internet, modem, gps,
+keycard, ble, dashboard, system, version:mdb, version:dbc, ota, alarm,
+navigation, scooter, trip, trip:counter, usb, remote-access
 ```
 
-It watches a subset for telemetry changes and event detection. On startup and connection it writes `internet.unu-cloud=disconnected` or `connected` to show WebSocket authentication status. The collector adds `meta.build-version`, `meta.environment`, and `meta.identifier`; it also adds an MDB board serial and modem fields when available. Vehicle states `hop-on` and `hop-on-learning` are translated to `stand-by` and `parked` respectively in cloud telemetry.
+The `settings` hash is deliberately not collected: it carries secrets such as `cellular.sim-pin`.
+
+It watches a subset for telemetry changes and event detection. On startup and connection it writes `remote-access.uplink-service=disconnected` or `connected` (and mirrors the legacy `internet.unu-cloud` field) to show WebSocket authentication status. The collector adds `meta.build-version`, `meta.environment`, and `meta.identifier`; it also adds an MDB board serial and modem fields when available. Vehicle states `hop-on` and `hop-on-learning` are translated to `stand-by` and `parked` respectively in cloud telemetry.
 
 Remote commands are translated into Redis queue requests. Common mappings are:
 
@@ -40,8 +43,10 @@ Remote commands are translated into Redis queue requests. Common mappings are:
 | `dashboard_on`, `dashboard_off`, `engine_on`, `engine_off`, `handlebar_lock`, `handlebar_unlock` | `scooter:hardware` with the corresponding `name:on`, `name:off`, `handlebar:lock`, or `handlebar:unlock` value |
 | `reboot`, `hibernate`, `hibernate_manual` | `scooter:power`: `reboot`, `hibernate`, `hibernate-manual` |
 | `alarm_arm`, `alarm_disarm`, `alarm_enable`, `alarm_disable`, `alarm_stop` | `scooter:alarm`: `arm`, `disarm`, `enable`, `disable`, `stop` |
+| `trip_reset` | `scooter:trip`: JSON `counter.reset` request with a one-minute deadline |
+| `update_check` | `scooter:update:mdb` and/or `scooter:update:dbc`: `check-now` (the MDB alone when it orchestrates DBC checks) |
 
-It also handles `locate`, `alarm`, `navigate`, `redis`, `config:get`, `config:set`, `config:del`, `config:save`, `keycards:list`, `keycards:add`, `keycards:delete`, `keycards:master_key:get`, `keycards:master_key:set`, `restart`, `get_state`, and `ping`. Every accepted command receives a `command_response` carrying the original request ID and a `success` or `failed` status.
+It also handles `locate`, `alarm`, `navigate`, `redis`, `config:get`, `config:set`, `config:del`, `config:save`, `keycards:list`, `keycards:add`, `keycards:delete`, `keycards:master_key:get`, `keycards:master_key:set`, `trip_reset`, `update_check`, `restart`, `get_state`, and `ping`. Every accepted command receives a `command_response` carrying the original request ID and a `success` or `failed` status.
 
 ### WebSocket protocol
 

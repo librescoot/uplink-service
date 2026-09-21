@@ -55,9 +55,17 @@ var fieldPriorities = map[string]Priority{
 }
 
 var hashPriorities = map[string]Priority{
-	"gps":       Quick,
-	"battery:0": Quick,
-	"battery:1": Quick,
+	"gps":                         Quick,
+	"battery:0":                   Quick,
+	"battery:1":                   Quick,
+	"usb":                         Quick,
+	"trip":                        Medium,
+	"trip:counter":                Medium,
+	"navigation":                  Medium,
+	"remote-access":               Medium,
+	"version:mdb":                 Slow,
+	"version:dbc":                 Slow,
+	"power-manager:busy-services": Slow,
 }
 
 // These fields remain in snapshots but cannot trigger transmission on their own.
@@ -158,8 +166,10 @@ func (m *Monitor) Start(ctx context.Context) {
 
 	channels := []string{
 		"vehicle", "battery:0", "battery:1", "aux-battery", "cb-battery",
-		"engine-ecu", "gps", "internet", "modem", "power-manager", "power-mux",
-		"keycard", "ble", "ota", "alarm", "dashboard", "system",
+		"engine-ecu", "gps", "internet", "modem", "power-manager",
+		"power-manager:busy-services", "power-mux", "keycard", "ble", "ota",
+		"alarm", "dashboard", "system", "version:mdb", "version:dbc",
+		"navigation", "remote-access", "trip", "trip:counter", "usb",
 	}
 
 	for _, channel := range channels {

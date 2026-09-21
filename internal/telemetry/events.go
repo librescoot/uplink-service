@@ -23,13 +23,14 @@ type TelemetryMonitor interface {
 }
 
 type EventDetector struct {
-	client        *ipc.Client
-	connMgr       *connection.Manager
-	monitor       TelemetryMonitor
-	bufferPath    string
-	maxRetries    int
-	faultConsumer *ipc.StreamConsumer
-	ctx           context.Context
+	client         *ipc.Client
+	connMgr        *connection.Manager
+	monitor        TelemetryMonitor
+	bufferPath     string
+	maxRetries     int
+	faultConsumer  *ipc.StreamConsumer
+	otaErrConsumer *ipc.StreamConsumer
+	ctx            context.Context
 
 	watchers  []*ipc.HashWatcher
 	lastState map[string]string
@@ -135,6 +136,13 @@ func (e *EventDetector) Start(ctx context.Context) {
 	}
 	e.watchers = append(e.watchers, alarmWatcher)
 
+	usbWatcher := e.client.NewHashWatcher("usb")
+	usbWatcher.OnField("mode", e.handleUSBModeChange)
+	if err := usbWatcher.Start(); err != nil {
+		log.Printf("[EventDetector] Failed to start usb watcher: %v", err)
+	}
+	e.watchers = append(e.watchers, usbWatcher)
+
 	log.Printf("[EventDetector] Started %d HashWatchers", len(e.watchers))
 
 	e.faultConsumer = e.client.NewStreamConsumer("events:faults")
@@ -145,10 +153,20 @@ func (e *EventDetector) Start(ctx context.Context) {
 	}
 	log.Println("[EventDetector] Started fault stream consumer")
 
+	e.otaErrConsumer = e.client.NewStreamConsumer("ota:errors")
+	e.otaErrConsumer.Handle(e.handleOTAError)
+	if err := e.otaErrConsumer.Start("$"); err != nil {
+		log.Printf("[EventDetector] Failed to start OTA error stream consumer: %v", err)
+	}
+	log.Println("[EventDetector] Started OTA error stream consumer")
+
 	<-ctx.Done()
 
 	if e.faultConsumer != nil {
 		e.faultConsumer.Stop()
+	}
+	if e.otaErrConsumer != nil {
+		e.otaErrConsumer.Stop()
 	}
 
 	for _, watcher := range e.watchers {
@@ -366,6 +384,35 @@ func (e *EventDetector) makeTemperatureHandler(component, field string) func(str
 		e.lastState[stateKey] = value
 		return nil
 	}
+}
+
+func (e *EventDetector) handleUSBModeChange(value string) error {
+	stateKey := "usb:mode"
+
+	if prev := e.lastState[stateKey]; prev != "" && prev != value {
+		e.sendEvent(e.ctx, "usb_mode_change", map[string]any{
+			"from": prev,
+			"to":   value,
+		})
+	}
+
+	e.lastState[stateKey] = value
+	return nil
+}
+
+// handleOTAError forwards update-service's per-component error entries. The
+// stream also carries "reset" entries when a component clears its error; only
+// real failures become cloud events.
+func (e *EventDetector) handleOTAError(id string, values map[string]string) error {
+	if values["event"] != "error" {
+		return nil
+	}
+	e.sendEvent(e.ctx, "ota_error", map[string]any{
+		"component": values["component"],
+		"code":      values["code"],
+		"message":   values["message"],
+	})
+	return nil
 }
 
 func (e *EventDetector) handleFault(id string, values map[string]string) error {

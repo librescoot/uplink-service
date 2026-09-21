@@ -10,11 +10,14 @@ import (
 	"github.com/librescoot/uplink-service/internal/modeminfo"
 )
 
+// The settings hash is deliberately absent: it carries secrets such as
+// cellular.sim-pin and must not leave the vehicle.
 var collectedHashes = []string{
 	"vehicle", "battery:0", "battery:1", "aux-battery", "cb-battery",
-	"engine-ecu", "power-manager", "power-mux", "internet", "modem", "gps",
-	"keycard", "ble", "dashboard", "system", "version:mdb", "version:dbc",
-	"ota", "alarm", "navigation", "scooter",
+	"engine-ecu", "power-manager", "power-manager:busy-services", "power-mux",
+	"internet", "modem", "gps", "keycard", "ble", "dashboard", "system",
+	"version:mdb", "version:dbc", "ota", "alarm", "navigation", "scooter",
+	"trip", "trip:counter", "usb", "remote-access",
 }
 
 type Collector struct {
