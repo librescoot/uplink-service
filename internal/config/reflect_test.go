@@ -1,6 +1,12 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"gopkg.in/yaml.v2"
+)
 
 func TestReflectionRoundTrip(t *testing.T) {
 	c := &Config{}
@@ -43,6 +49,46 @@ func TestReflectionRoundTrip(t *testing.T) {
 	}
 	if c.Events.Movement.MovementEnabled() {
 		t.Errorf("expected movement disabled")
+	}
+}
+
+func TestSaveAtomicallyReplacesConfigAndBacksUpPreviousContents(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "uplink.yaml")
+	const previous = "environment: development\n"
+	if err := os.WriteFile(path, []byte(previous), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Config{SourcePath: path, Environment: "production"}
+	if err := c.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	backup, err := os.ReadFile(path + ".backup")
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(backup) != previous {
+		t.Errorf("backup = %q, want %q", backup, previous)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var saved Config
+	if err := yaml.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("unmarshal saved config: %v", err)
+	}
+	if saved.Environment != "production" {
+		t.Errorf("saved environment = %q, want production", saved.Environment)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("config mode = %o, want 600", info.Mode().Perm())
 	}
 }
 

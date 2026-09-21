@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	ipc "github.com/librescoot/redis-ipc"
@@ -32,6 +33,7 @@ type EventDetector struct {
 
 	watchers  []*ipc.HashWatcher
 	lastState map[string]string
+	bufferMu  sync.Mutex
 }
 
 func NewEventDetector(client *ipc.Client, connMgr *connection.Manager, monitor TelemetryMonitor, bufferPath string, maxRetries int) *EventDetector {
@@ -438,10 +440,17 @@ func (e *EventDetector) sendEvent(ctx context.Context, eventType string, data ma
 }
 
 func (e *EventDetector) bufferEvent(event map[string]any) {
-
 	if _, ok := event["retries"]; !ok {
 		event["retries"] = 0
 	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("[EventDetector] Failed to marshal event: %v", err)
+		return
+	}
+
+	e.bufferMu.Lock()
+	defer e.bufferMu.Unlock()
 
 	dir := filepath.Dir(e.bufferPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -454,19 +463,23 @@ func (e *EventDetector) bufferEvent(event map[string]any) {
 		log.Printf("[EventDetector] Failed to open buffer file: %v", err)
 		return
 	}
-	defer f.Close()
-
-	data, err := json.Marshal(event)
-	if err != nil {
-		log.Printf("[EventDetector] Failed to marshal event: %v", err)
-		return
-	}
 	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
 		log.Printf("[EventDetector] Failed to write event to buffer: %v", err)
 		return
 	}
 	if _, err := f.Write([]byte("\n")); err != nil {
+		_ = f.Close()
 		log.Printf("[EventDetector] Failed to write newline to buffer: %v", err)
+		return
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		log.Printf("[EventDetector] Failed to sync event buffer: %v", err)
+		return
+	}
+	if err := f.Close(); err != nil {
+		log.Printf("[EventDetector] Failed to close event buffer: %v", err)
 		return
 	}
 
@@ -481,6 +494,9 @@ func (e *EventDetector) flushBufferedEvents(ctx context.Context) {
 	if !e.connMgr.IsConnected() {
 		return
 	}
+
+	e.bufferMu.Lock()
+	defer e.bufferMu.Unlock()
 
 	if _, err := os.Stat(e.bufferPath); os.IsNotExist(err) {
 		return
@@ -556,23 +572,9 @@ func (e *EventDetector) flushBufferedEvents(ctx context.Context) {
 		successCount, len(failedEvents), discardedCount)
 
 	if len(failedEvents) > 0 {
-		f, err := os.OpenFile(e.bufferPath, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
+		if err := writeEventBufferAtomic(e.bufferPath, failedEvents); err != nil {
 			log.Printf("[EventDetector] Failed to rewrite buffer: %v", err)
 			return
-		}
-		defer f.Close()
-
-		for _, event := range failedEvents {
-			data, _ := json.Marshal(event)
-			if _, err := f.Write(data); err != nil {
-				log.Printf("[EventDetector] Failed to write event to buffer: %v", err)
-				break
-			}
-			if _, err := f.Write([]byte("\n")); err != nil {
-				log.Printf("[EventDetector] Failed to write newline to buffer: %v", err)
-				break
-			}
 		}
 		log.Printf("[EventDetector] Rewrote buffer with %d failed events", len(failedEvents))
 	} else {
@@ -581,6 +583,56 @@ func (e *EventDetector) flushBufferedEvents(ctx context.Context) {
 			log.Printf("[EventDetector] Failed to remove buffer file: %v", err)
 		}
 	}
+}
+
+func writeEventBufferAtomic(path string, events []map[string]any) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+	published := false
+	defer func() {
+		if !published {
+			_ = f.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := f.Chmod(0o644); err != nil {
+		return err
+	}
+	for _, event := range events {
+		data, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(data); err != nil {
+			return err
+		}
+		if _, err := f.Write([]byte("\n")); err != nil {
+			return err
+		}
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return err
+	}
+	published = true
+	return nil
 }
 
 func splitLines(s string) []string {

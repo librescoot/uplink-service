@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v2"
@@ -22,6 +23,8 @@ type Config struct {
 	RedisURL      string                   `yaml:"redis_url"`
 
 	SourcePath string `yaml:"-"`
+
+	saveMu sync.Mutex
 }
 
 type UplinkConfig struct {

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -42,6 +43,9 @@ func (c *Config) DeleteField(path string) error {
 }
 
 func (c *Config) Save() error {
+	c.saveMu.Lock()
+	defer c.saveMu.Unlock()
+
 	if c.SourcePath == "" {
 		return fmt.Errorf("no source path recorded for config")
 	}
@@ -50,9 +54,53 @@ func (c *Config) Save() error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 	if existing, err := os.ReadFile(c.SourcePath); err == nil {
-		_ = os.WriteFile(c.SourcePath+".backup", existing, 0o600)
+		_ = writeFileAtomic(c.SourcePath+".backup", existing, 0o600)
 	}
-	return os.WriteFile(c.SourcePath, data, 0o600)
+	if err := writeFileAtomic(c.SourcePath, data, 0o600); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	return nil
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+	published := false
+	defer func() {
+		if !published {
+			_ = f.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := f.Chmod(perm); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return err
+	}
+	published = true
+	return nil
 }
 
 func (c *Config) RawYAML() (string, error) {

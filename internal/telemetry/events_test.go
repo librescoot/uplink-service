@@ -1,8 +1,37 @@
 package telemetry
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+func TestWriteEventBufferAtomicReplacesPreviousQueue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.queue")
+	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	events := []map[string]any{{"event": "battery-low", "retries": 1}}
+	if err := writeEventBufferAtomic(path, events); err != nil {
+		t.Fatalf("writeEventBufferAtomic: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "{\"event\":\"battery-low\",\"retries\":1}\n" {
+		t.Errorf("queue = %q", data)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, ".events.queue.tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Errorf("temporary files remain: %v", matches)
+	}
+}
 
 func TestBatteryCriticalOnlyWhenPresent(t *testing.T) {
 	tests := []struct {
