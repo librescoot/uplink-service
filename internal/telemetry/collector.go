@@ -121,7 +121,8 @@ func (c *Collector) augment(state map[string]any) {
 	}
 
 	meta := map[string]any{
-		"build-version": c.version,
+		"build-version":        c.version,
+		"navigation-route-api": "1",
 	}
 	if c.cfg != nil {
 		meta["environment"] = c.cfg.Environment

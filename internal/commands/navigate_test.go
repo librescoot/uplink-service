@@ -8,6 +8,24 @@ import (
 // buildWaypoints is the parse side of a cloud-pushed multi-hop plan. The
 // dashboard expects the lat/lon/label JSON shape, and the first stop is also
 // published as the current target.
+func TestHasNavigationRouteCapability(t *testing.T) {
+	for _, tc := range []struct {
+		registry string
+		want     bool
+	}{
+		{"cap:ext:nav=2:keycard", true},
+		{"cap:ext:keycard:nav=2", true},
+		{"cap:ext:nav=1", false},
+		{"cap:ext:nav=20", false},
+		{"nav=2", false},
+		{"", false},
+	} {
+		if got := hasNavigationRouteCapability(tc.registry); got != tc.want {
+			t.Errorf("registry %q: got %t, want %t", tc.registry, got, tc.want)
+		}
+	}
+}
+
 func TestBuildWaypoints(t *testing.T) {
 	tests := []struct {
 		name      string

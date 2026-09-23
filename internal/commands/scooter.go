@@ -137,6 +137,15 @@ func (h *Handler) navigate(params map[string]any) error {
 	// latitude/longitude as the current target, so the first stop is also
 	// written there, and waypoints/current-step carry the ordered list.
 	waypointsJSON, firstLat, firstLng, firstLabel, hasWaypoints := buildWaypoints(params)
+	if _, supplied := params["waypoints"]; supplied && !hasWaypoints {
+		return fmt.Errorf("invalid route waypoints")
+	}
+	if hasWaypoints {
+		capabilities, err := h.client.HGet("system", "capabilities")
+		if err != nil || !hasNavigationRouteCapability(capabilities) {
+			return fmt.Errorf("scooter does not advertise multi-stop routes")
+		}
+	}
 
 	if !hasLat && !hasLng && addr == "" && !hasWaypoints {
 		// Clear by setting empty strings rather than HDEL: hash watchers do not
@@ -198,6 +207,18 @@ func (h *Handler) navigate(params map[string]any) error {
 	_ = set("timestamp", time.Now().UTC().Format(time.RFC3339))
 	_, _ = h.client.Publish("navigation", "updated")
 	return nil
+}
+
+func hasNavigationRouteCapability(capabilities string) bool {
+	if !strings.HasPrefix(capabilities, "cap:ext:") {
+		return false
+	}
+	for _, group := range strings.Split(strings.TrimPrefix(capabilities, "cap:ext:"), ":") {
+		if group == "nav=2" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildWaypoints reads an optional ordered stop list from a navigate command.
