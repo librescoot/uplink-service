@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	ipc "github.com/librescoot/redis-ipc"
 )
 
 func paramFloat(v any, def float64) float64 {
@@ -128,15 +131,28 @@ func (h *Handler) stopAlarm() {
 	}
 }
 
-func (h *Handler) navigate(params map[string]any) error {
-	lat, hasLat := params["latitude"]
-	lng, hasLng := params["longitude"]
-	addr, _ := params["address"].(string)
+const routePlanChannel = "settings:route-plan"
 
-	// A multi-hop plan supersedes a single destination. The dashboard reads
-	// latitude/longitude as the current target, so the first stop is also
-	// written there, and waypoints/current-step carry the ordered list.
-	waypointsJSON, firstLat, firstLng, firstLabel, hasWaypoints := buildWaypoints(params)
+type routeStop struct {
+	Lat   float64 `json:"lat"`
+	Lon   float64 `json:"lon"`
+	Label string  `json:"label"`
+}
+
+type routePlan struct {
+	ID          string      `json:"id"`
+	Revision    uint64      `json:"revision"`
+	Stops       []routeStop `json:"stops"`
+	CurrentStep int         `json:"current_step"`
+}
+
+type replaceRoutePlanRequest struct {
+	Stops []routeStop `json:"stops"`
+}
+
+func (h *Handler) navigate(params map[string]any) error {
+	addr, _ := params["address"].(string)
+	stops, hasWaypoints := buildWaypoints(params)
 	if _, supplied := params["waypoints"]; supplied && !hasWaypoints {
 		return fmt.Errorf("invalid route waypoints")
 	}
@@ -145,67 +161,24 @@ func (h *Handler) navigate(params map[string]any) error {
 		if err != nil || !hasNavigationRouteCapability(capabilities) {
 			return fmt.Errorf("scooter does not advertise multi-stop routes")
 		}
-	}
-
-	if !hasLat && !hasLng && addr == "" && !hasWaypoints {
-		// Clear by setting empty strings rather than HDEL: hash watchers do not
-		// see a delete, so subscribers would only notice on the next poll.
-		for _, field := range []string{"latitude", "longitude", "address", "timestamp",
-			"destination", "waypoints", "current-step"} {
-			if err := h.client.HSet("navigation", field, ""); err != nil {
-				return fmt.Errorf("clear navigation %s: %w", field, err)
-			}
+	} else if params["latitude"] == nil && params["longitude"] == nil && addr == "" {
+		_, err := ipc.CallMethod[struct{}, routePlan](h.client, routePlanChannel, "plan.clear", struct{}{}, 3*time.Second)
+		if err != nil {
+			return fmt.Errorf("clear route plan: %w", err)
 		}
-		_, _ = h.client.Publish("navigation", "cleared")
 		return nil
-	}
-
-	set := func(field string, value any) error {
-		return h.client.HSet("navigation", field, fmt.Sprint(value))
-	}
-
-	if hasWaypoints {
-		if err := set("waypoints", waypointsJSON); err != nil {
-			return err
-		}
-		if err := set("current-step", 0); err != nil {
-			return err
-		}
-		if err := set("latitude", firstLat); err != nil {
-			return err
-		}
-		if err := set("longitude", firstLng); err != nil {
-			return err
-		}
-		if err := set("destination", fmt.Sprintf("%.6f,%.6f", firstLat, firstLng)); err != nil {
-			return err
-		}
-		if firstLabel != "" {
-			_ = set("address", firstLabel)
-		}
 	} else {
-		if hasLat {
-			if err := set("latitude", lat); err != nil {
-				return err
-			}
+		lat, okLat := firstNumber(params, "latitude")
+		lon, okLon := firstNumber(params, "longitude")
+		if !okLat || !okLon {
+			return fmt.Errorf("navigate requires both latitude and longitude")
 		}
-		if hasLng {
-			if err := set("longitude", lng); err != nil {
-				return err
-			}
-		}
-		if addr != "" {
-			if err := set("address", addr); err != nil {
-				return err
-			}
-		}
-		// A single destination replaces any plan. Empty strings, so the store
-		// notices.
-		_ = set("waypoints", "")
-		_ = set("current-step", "")
+		stops = []routeStop{{Lat: lat, Lon: lon, Label: addr}}
 	}
-	_ = set("timestamp", time.Now().UTC().Format(time.RFC3339))
-	_, _ = h.client.Publish("navigation", "updated")
+	_, err := ipc.CallMethod[replaceRoutePlanRequest, routePlan](h.client, routePlanChannel, "plan.replace", replaceRoutePlanRequest{Stops: stops}, 3*time.Second)
+	if err != nil {
+		return fmt.Errorf("replace route plan: %w", err)
+	}
 	return nil
 }
 
@@ -222,26 +195,17 @@ func hasNavigationRouteCapability(capabilities string) bool {
 }
 
 // buildWaypoints reads an optional ordered stop list from a navigate command.
-// Each stop accepts latitude/longitude or lat/lon (number or numeric string)
-// with an optional label or name. It returns the JSON the dashboard's
-// navigation hash expects, plus the first stop's fields so the caller can also
-// publish it as the current target.
-func buildWaypoints(params map[string]any) (string, float64, float64, string, bool) {
+// Stops accept latitude/longitude or lat/lon (number or numeric string).
+func buildWaypoints(params map[string]any) ([]routeStop, bool) {
 	raw, present := params["waypoints"]
 	if !present {
-		return "", 0, 0, "", false
+		return nil, false
 	}
 	list, isList := raw.([]any)
 	if !isList || len(list) == 0 {
-		return "", 0, 0, "", false
+		return nil, false
 	}
-
-	type stop struct {
-		Lat   float64 `json:"lat"`
-		Lon   float64 `json:"lon"`
-		Label string  `json:"label,omitempty"`
-	}
-	stops := make([]stop, 0, len(list))
+	stops := make([]routeStop, 0, len(list))
 	for _, entry := range list {
 		m, isMap := entry.(map[string]any)
 		if !isMap {
@@ -256,17 +220,12 @@ func buildWaypoints(params map[string]any) (string, float64, float64, string, bo
 		if label == "" {
 			label, _ = m["name"].(string)
 		}
-		stops = append(stops, stop{Lat: la, Lon: lo, Label: label})
+		stops = append(stops, routeStop{Lat: la, Lon: lo, Label: label})
 	}
 	if len(stops) == 0 {
-		return "", 0, 0, "", false
+		return nil, false
 	}
-
-	encoded, err := json.Marshal(stops)
-	if err != nil {
-		return "", 0, 0, "", false
-	}
-	return string(encoded), stops[0].Lat, stops[0].Lon, stops[0].Label, true
+	return stops, true
 }
 
 func firstNumber(m map[string]any, keys ...string) (float64, bool) {
@@ -293,6 +252,9 @@ func firstNumber(m map[string]any, keys ...string) (float64, bool) {
 func (h *Handler) redisCommand(params map[string]any) (map[string]any, error) {
 	op, _ := params["command"].(string)
 	args := toStringSlice(params["args"])
+	if (op == "set" || op == "hset") && len(args) > 0 && args[0] == "navigation" || op == "del" && slices.Contains(args, "navigation") {
+		return nil, fmt.Errorf("navigation is owned by settings-service")
+	}
 
 	switch op {
 	case "get":
