@@ -47,7 +47,13 @@ type Manager struct {
 	connectedCh chan struct{}
 	done        chan struct{}
 
-	StatusCallback func(connected bool)
+	StatusCallback     func(connected bool)
+	liveMu             sync.Mutex
+	livePending        map[string]liveFrame
+	liveOrder          uint64
+	liveWake           chan struct{}
+	liveReceiver       func([]byte)
+	liveReceiverClient *LiveClient
 }
 
 func NewManager(cfg *config.Config, version string) *Manager {
@@ -61,6 +67,7 @@ func NewManager(cfg *config.Config, version string) *Manager {
 		configChan:  make(chan *protocol.ConfigUpdateMessage, 16),
 		connectedCh: make(chan struct{}, 1),
 		done:        make(chan struct{}),
+		liveWake:    make(chan struct{}, 1),
 	}
 }
 
@@ -154,6 +161,7 @@ func (m *Manager) connect(ctx context.Context) error {
 		close(stopSignal)
 	}
 
+	_ = conn.Close()
 	wg.Wait()
 
 	if ctx.Err() != nil {
@@ -245,11 +253,14 @@ func (m *Manager) readLoop(readDone chan struct{}, stopSignal <-chan struct{}) {
 
 		var baseMsg protocol.BaseMessage
 		if err := json.Unmarshal(message, &baseMsg); err != nil {
-			log.Printf("[ConnectionManager] Failed to parse message: %v", err)
+			log.Print("[ConnectionManager] Invalid message envelope")
 			continue
 		}
 
 		switch baseMsg.Type {
+		case "ride_group_control", "ride_group_peer", "ride_group_peer_status":
+			m.deliverLive(message)
+
 		case protocol.MsgTypeKeepalive:
 			log.Println("[ConnectionManager] Received keepalive")
 
@@ -303,6 +314,10 @@ func (m *Manager) writeLoop(stopSignal <-chan struct{}) {
 					return
 				}
 			}
+		case <-m.liveWake:
+			if frame, ok := m.takeLive(); ok && !m.writeLive(frame) {
+				return
+			}
 		case data := <-m.sendChan:
 			m.mu.RLock()
 			conn := m.conn
@@ -311,6 +326,7 @@ func (m *Manager) writeLoop(stopSignal <-chan struct{}) {
 				m.mu.RUnlock()
 				continue
 			}
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			err := conn.WriteMessage(websocket.TextMessage, data)
 			m.mu.RUnlock()
 
@@ -593,6 +609,7 @@ func (m *Manager) markConnected() {
 }
 
 func (m *Manager) markDisconnected() {
+	m.resetLiveQueue()
 	m.mu.Lock()
 	m.connected = false
 	m.authenticated = false

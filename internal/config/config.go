@@ -21,6 +21,9 @@ type Config struct {
 	Environment   string                   `yaml:"environment"`
 	ServiceName   string                   `yaml:"service_name"`
 	RedisURL      string                   `yaml:"redis_url"`
+	RideGroup     struct {
+		Enabled bool `yaml:"enabled"`
+	} `yaml:"ride_group"`
 
 	SourcePath string `yaml:"-"`
 

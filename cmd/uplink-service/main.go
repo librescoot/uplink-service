@@ -13,11 +13,13 @@ import (
 	"time"
 
 	ipc "github.com/librescoot/redis-ipc"
+	redis "github.com/redis/go-redis/v9"
 
 	"github.com/librescoot/uplink-service/internal/commands"
 	"github.com/librescoot/uplink-service/internal/config"
 	"github.com/librescoot/uplink-service/internal/connection"
 	"github.com/librescoot/uplink-service/internal/modeminfo"
+	"github.com/librescoot/uplink-service/internal/ridegroup"
 	"github.com/librescoot/uplink-service/internal/telemetry"
 	"github.com/librescoot/uplink-service/internal/timeutil"
 )
@@ -114,7 +116,28 @@ func main() {
 	publisher := telemetry.NewPublisher(collector, connMgr, clock, buffer)
 	monitor.SetFlusher(publisher)
 
+	var liveAdapter *ridegroup.Adapter
+	var liveClient *connection.LiveClient
+	if cfg.RideGroup.Enabled {
+		liveRedis := redis.NewClient(&redis.Options{Addr: fmt.Sprintf("%s:%d", redisAddr, redisPort)})
+		defer liveRedis.Close()
+		liveAdapter, err = ridegroup.NewAdapter(ctx, ridegroup.Config{Enabled: true, Identifier: cfg.Scooter.Identifier, ProtocolVersion: 2}, liveRedis)
+		if err != nil {
+			log.Fatalf("Live adapter initialization failed: %v", err)
+		}
+		liveAdapter.Start()
+		defer liveAdapter.Stop()
+	}
+
 	connMgr.StatusCallback = func(connected bool) {
+		if liveAdapter != nil {
+			if connected {
+				liveClient = connMgr.LiveClient()
+				liveAdapter.OnConnected(liveClient)
+			} else {
+				liveAdapter.OnDisconnected(liveClient)
+			}
+		}
 		writeCloudStatus(remoteAccessHash, internetHash, connected)
 		if !connected {
 			publisher.ResetBaseline()
