@@ -6,7 +6,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/beevik/ntp v1.5.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/librescoot/redis-ipc v0.15.4
+	github.com/librescoot/redis-ipc v0.15.5-0.20261111175103-0bca8184dc69
 	github.com/redis/go-redis/v9 v9.18.0
 	gopkg.in/yaml.v2 v2.4.0
 )
